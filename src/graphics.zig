@@ -36,10 +36,17 @@ pub const Graphics = struct {
 
     vkb: BaseDispatch,
     vki: InstanceDispatch,
+    vkd: DeviceDispatch,
 
     instance: Instance,
     surface: vk.SurfaceKHR,
     gpu: vk.PhysicalDevice,
+    device: Device,
+
+    graphics_queue: Queue,
+    present_queue: Queue,
+    transfer_queue: Queue,
+    compute_queue: Queue,
 
     const Self = @This();
 
@@ -66,7 +73,7 @@ pub const Graphics = struct {
         log.info("GPU picked: {s}", .{std.mem.sliceTo(&gpu.props.device_name, 0)});
 
         log.debug("creating device ..", .{});
-        try self.createDevice();
+        try self.createDevice(gpu);
         log.debug("device created", .{});
 
         return self;
@@ -111,8 +118,78 @@ pub const Graphics = struct {
         errdefer self.instance.destroyInstance(null);
     }
 
-    fn createDevice(self: *Self) !void {
-        _ = self;
+    fn createDevice(self: *Self, gpu: GpuCandidate) !void {
+        log.debug("gpu={any}", .{gpu});
+
+        const priority = [_]f32{1};
+        var queue_create_infos_buf = [_]vk.DeviceQueueCreateInfo{
+            vk.DeviceQueueCreateInfo{
+                .queue_family_index = gpu.graphics_family,
+                .queue_count = 1,
+                .p_queue_priorities = &priority,
+            },
+            vk.DeviceQueueCreateInfo{
+                .queue_family_index = gpu.present_family,
+                .queue_count = 1,
+                .p_queue_priorities = &priority,
+            },
+            vk.DeviceQueueCreateInfo{
+                .queue_family_index = gpu.transfer_family,
+                .queue_count = 1,
+                .p_queue_priorities = &priority,
+            },
+            vk.DeviceQueueCreateInfo{
+                .queue_family_index = gpu.compute_family,
+                .queue_count = 1,
+                .p_queue_priorities = &priority,
+            },
+        };
+
+        std.sort.pdq(vk.DeviceQueueCreateInfo, queue_create_infos_buf[0..], {}, struct {
+            fn inner(_: void, a: vk.DeviceQueueCreateInfo, b: vk.DeviceQueueCreateInfo) bool {
+                return a.queue_family_index < b.queue_family_index;
+            }
+        }.inner);
+
+        var queue_create_infos = std.ArrayListAlignedUnmanaged(vk.DeviceQueueCreateInfo, null){
+            .items = queue_create_infos_buf[0..],
+            .capacity = queue_create_infos_buf.len,
+        };
+
+        // remove duplicate queue families
+        for (1..queue_create_infos.items.len) |i| {
+            const j = queue_create_infos.items.len - i;
+            if (queue_create_infos.items[j].queue_family_index == queue_create_infos.items[j - 1].queue_family_index) {
+                _ = queue_create_infos.orderedRemove(j);
+            }
+        }
+
+        for (queue_create_infos.items) |queue_create_info| {
+            log.debug("queue: {}", .{
+                queue_create_info.queue_family_index,
+            });
+        }
+
+        const device = try self.instance.createDevice(self.gpu, &vk.DeviceCreateInfo{
+            .queue_create_info_count = @truncate(queue_create_infos.items.len),
+            .p_queue_create_infos = queue_create_infos.items.ptr,
+            .enabled_extension_count = @truncate(required_device_extensions.len),
+            .pp_enabled_extension_names = &required_device_extensions,
+        }, null);
+
+        self.vkd = try DeviceDispatch.load(device, self.instance.wrapper.dispatch.vkGetDeviceProcAddr);
+        self.device = Device.init(device, &self.vkd);
+        errdefer self.device.destroyDevice(null);
+
+        const graphics_queue = self.device.getDeviceQueue(gpu.graphics_family, 0);
+        const present_queue = self.device.getDeviceQueue(gpu.present_family, 0);
+        const transfer_queue = self.device.getDeviceQueue(gpu.transfer_family, 0);
+        const compute_queue = self.device.getDeviceQueue(gpu.compute_family, 0);
+
+        self.graphics_queue = Queue.init(graphics_queue, &self.vkd);
+        self.present_queue = Queue.init(present_queue, &self.vkd);
+        self.transfer_queue = Queue.init(transfer_queue, &self.vkd);
+        self.compute_queue = Queue.init(compute_queue, &self.vkd);
     }
 
     fn pickGpu(self: *Self) !GpuCandidate {
