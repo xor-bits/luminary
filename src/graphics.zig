@@ -218,17 +218,16 @@ pub const Graphics = struct {
         };
 
         // remove duplicate queue families
-        for (1..queue_create_infos.items.len) |i| {
-            const j = queue_create_infos.items.len - i;
-            if (queue_create_infos.items[j].queue_family_index == queue_create_infos.items[j - 1].queue_family_index) {
-                _ = queue_create_infos.orderedRemove(j);
-            }
+        var i: usize = queue_create_infos.items.len;
+        if (i > 0) {
+            i -= 1;
         }
+        while (i > 0) {
+            i -= 1;
 
-        for (queue_create_infos.items) |queue_create_info| {
-            log.debug("queue: {}", .{
-                queue_create_info.queue_family_index,
-            });
+            if (queue_create_infos.items[i].queue_family_index == queue_create_infos.items[i + 1].queue_family_index) {
+                _ = queue_create_infos.orderedRemove(i + 1);
+            }
         }
 
         const device = try self.instance.createDevice(self.gpu, &vk.DeviceCreateInfo{
