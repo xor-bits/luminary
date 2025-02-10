@@ -41,6 +41,8 @@ pub const Graphics = struct {
     instance: Instance,
     surface: vk.SurfaceKHR,
     gpu: vk.PhysicalDevice,
+    props: vk.PhysicalDeviceProperties,
+    mem_props: vk.PhysicalDeviceMemoryProperties,
     device: Device,
 
     graphics_queue: Queue,
@@ -217,6 +219,8 @@ pub const Graphics = struct {
 
         const gpu = best_gpu orelse return error.NoSuitableGpus;
         self.gpu = gpu.gpu;
+        self.props = gpu.props;
+        self.mem_props = self.instance.getPhysicalDeviceMemoryProperties(gpu.gpu);
 
         return gpu;
     }
