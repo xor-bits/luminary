@@ -105,6 +105,14 @@ pub const Graphics = struct {
         return self;
     }
 
+    pub fn deinit(self: *Self) void {
+        vma.vmaDestroyAllocator(self.vma);
+        self.device.destroyDevice(null);
+        self.instance.destroySurfaceKHR(self.surface, null);
+        self.instance.destroyInstance(null);
+        self.allocator.destroy(self);
+    }
+
     fn createInstance(self: *Self) !void {
         var glfw_exts_count: u32 = 0;
         const glfw_exts = glfw.getRequiredInstanceExtensions(&glfw_exts_count);

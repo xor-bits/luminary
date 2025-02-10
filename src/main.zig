@@ -44,7 +44,8 @@ pub fn main() !void {
     );
     defer glfw.destroyWindow(window);
 
-    _ = try graphics.Graphics.init(allocator, window);
+    var g = try graphics.Graphics.init(allocator, window);
+    defer g.deinit();
 
     log.info("running main loop", .{});
 
