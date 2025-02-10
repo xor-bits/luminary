@@ -15,6 +15,7 @@ const apis: []const vk.ApiInfo = &.{
     vk.features.version_1_2,
     vk.extensions.khr_surface,
     vk.extensions.khr_swapchain,
+    vk.extensions.ext_debug_utils,
 };
 
 const BaseDispatch = vk.BaseWrapper(apis);
@@ -40,6 +41,7 @@ pub const Graphics = struct {
     vkd: DeviceDispatch,
 
     instance: Instance,
+    debug_messenger: vk.DebugUtilsMessengerEXT,
     surface: vk.SurfaceKHR,
     gpu: vk.PhysicalDevice,
     props: vk.PhysicalDeviceProperties,
@@ -67,6 +69,11 @@ pub const Graphics = struct {
         try self.createInstance();
         errdefer self.instance.destroyInstance(null);
         log.debug("instance created", .{});
+
+        log.debug("creating debug messenger ..", .{});
+        try self.createDebugMessenger();
+        errdefer self.instance.destroyDebugUtilsMessengerEXT(self.debug_messenger, null);
+        log.debug("debug messenger created", .{});
 
         log.debug("creating surface ..", .{});
         try self.createSurface();
@@ -109,13 +116,14 @@ pub const Graphics = struct {
         vma.vmaDestroyAllocator(self.vma);
         self.device.destroyDevice(null);
         self.instance.destroySurfaceKHR(self.surface, null);
+        self.instance.destroyDebugUtilsMessengerEXT(self.debug_messenger, null);
         self.instance.destroyInstance(null);
         self.allocator.destroy(self);
     }
 
     fn createInstance(self: *Self) !void {
         var glfw_exts_count: u32 = 0;
-        const glfw_exts = glfw.getRequiredInstanceExtensions(&glfw_exts_count);
+        const glfw_exts = glfw.getRequiredInstanceExtensions(&glfw_exts_count) orelse &[0][*]const u8{};
 
         const layers = try self.vkb.enumerateInstanceLayerPropertiesAlloc(self.allocator);
         defer self.allocator.free(layers);
@@ -132,6 +140,11 @@ pub const Graphics = struct {
             }
         }
 
+        var extensions = std.ArrayList([*]const u8).init(self.allocator);
+        defer extensions.deinit();
+        try extensions.appendSlice(glfw_exts[0..glfw_exts_count]);
+        try extensions.append(vk.extensions.ext_debug_utils.name.ptr);
+
         const instance = try self.vkb.createInstance(&vk.InstanceCreateInfo{
             .p_application_info = &vk.ApplicationInfo{
                 .p_application_name = "luminary",
@@ -140,8 +153,8 @@ pub const Graphics = struct {
                 .engine_version = vk.makeApiVersion(0, 0, 0, 0),
                 .api_version = vk.API_VERSION_1_2,
             },
-            .enabled_extension_count = glfw_exts_count,
-            .pp_enabled_extension_names = @ptrCast(glfw_exts),
+            .enabled_extension_count = @truncate(extensions.items.len),
+            .pp_enabled_extension_names = @ptrCast(extensions.items.ptr),
             .enabled_layer_count = @intFromBool(vk_layer_khronos_validation_found),
             .pp_enabled_layer_names = &.{vk_layer_khronos_validation},
         }, null);
@@ -152,9 +165,23 @@ pub const Graphics = struct {
         errdefer self.instance.destroyInstance(null);
     }
 
-    fn createDevice(self: *Self, gpu: GpuCandidate) !void {
-        log.debug("gpu={any}", .{gpu});
+    fn createDebugMessenger(self: *Self) !void {
+        self.debug_messenger = try self.instance.createDebugUtilsMessengerEXT(&vk.DebugUtilsMessengerCreateInfoEXT{
+            .message_severity = .{
+                .error_bit_ext = true,
+                .warning_bit_ext = true,
+            },
+            .message_type = .{
+                .general_bit_ext = true,
+                .validation_bit_ext = true,
+                .performance_bit_ext = true,
+                .device_address_binding_bit_ext = true,
+            },
+            .pfn_user_callback = debugCallback,
+        }, null);
+    }
 
+    fn createDevice(self: *Self, gpu: GpuCandidate) !void {
         const priority = [_]f32{1};
         var queue_create_infos_buf = [_]vk.DeviceQueueCreateInfo{
             vk.DeviceQueueCreateInfo{
@@ -413,3 +440,20 @@ pub const Graphics = struct {
         return glfw.getInstanceProcAddress(@intFromEnum(instance), procname);
     }
 };
+
+fn debugCallback(severity: vk.DebugUtilsMessageSeverityFlagsEXT, types: vk.DebugUtilsMessageTypeFlagsEXT, data: ?*const vk.DebugUtilsMessengerCallbackDataEXT, user_data: ?*anyopaque) callconv(vk.vulkan_call_conv) vk.Bool32 {
+    _ = types;
+    _ = user_data;
+    const msg = b: {
+        break :b (data orelse break :b "<no data>").p_message orelse "<no message>";
+    };
+
+    const l = std.log.scoped(.validation);
+    if (severity.error_bit_ext) {
+        l.err("{s}", .{msg});
+    } else {
+        l.warn("{s}", .{msg});
+    }
+
+    return vk.FALSE;
+}
