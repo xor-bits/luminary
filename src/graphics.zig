@@ -127,10 +127,14 @@ pub const Graphics = struct {
             const is_suitable = try self.isSuitable(gpu, props);
             log.debug("gpu ({s}): {s}", .{ if (is_suitable != null) "suitable" else "not suitable", std.mem.sliceTo(&props.device_name, 0) });
 
-            if (best_gpu == null) {
-                if (is_suitable) |new_gpu| {
+            const new_gpu = is_suitable orelse continue;
+
+            if (best_gpu) |*current| {
+                if (current.score < new_gpu.score) {
                     best_gpu = new_gpu;
                 }
+            } else {
+                best_gpu = new_gpu;
             }
         }
 
@@ -143,11 +147,23 @@ pub const Graphics = struct {
     const GpuCandidate = struct {
         gpu: vk.PhysicalDevice,
         props: vk.PhysicalDeviceProperties,
+        score: usize,
         graphics_family: u32,
         present_family: u32,
         transfer_family: u32,
         compute_family: u32,
     };
+
+    fn scoreOf(props: *const vk.PhysicalDeviceProperties) usize {
+        return switch (props.device_type) {
+            .discrete_gpu => 5,
+            .virtual_gpu => 4,
+            .integrated_gpu => 3,
+            .cpu => 2,
+            .other => 1,
+            else => 0,
+        };
+    }
 
     fn isSuitable(
         self: *Self,
@@ -201,6 +217,7 @@ pub const Graphics = struct {
 
         return GpuCandidate{
             .gpu = gpu,
+            .score = scoreOf(&props),
             .props = props,
             .graphics_family = graphics_family,
             .present_family = present_family,

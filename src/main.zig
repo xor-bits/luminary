@@ -46,6 +46,8 @@ pub fn main() !void {
 
     _ = try graphics.Graphics.init(allocator, window);
 
+    log.info("running main loop", .{});
+
     while (!glfw.windowShouldClose(window)) {
         if (glfw.getKey(window, glfw.KeyEscape) == glfw.Press) {
             glfw.setWindowShouldClose(window, true);
