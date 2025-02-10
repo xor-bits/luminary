@@ -1,0 +1,27 @@
+.{
+    .name = "luminary",
+    .version = "0.0.0",
+    .dependencies = .{
+        .vulkan_headers = .{
+            .url = "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.3.301.tar.gz",
+            .hash = "12202429c94dfbf0ac21e42dd39c610e96a9148bc205d557d9cf1bb1302c50a08db4",
+        },
+        .vulkan_zig = .{
+            .url = "https://github.com/Snektron/vulkan-zig/archive/84b9622f92284fd8d90bc29097da5e58ce51a27f.tar.gz",
+            .hash = "1220ed8dbf35b9391f2d11c984493f80ecef1287bf07c9e29fba967c6912e54bb9b3",
+        },
+        // .vulkan_zig = .{
+        //     .url = "https://github.com/Snektron/vulkan-zig/archive/604416bf44baf95568c428e1aa55499aa8e07607.tar.gz",
+        //     .hash = "1220a7e73d72a0d56bc2a65f9d8999a7c019e42260a0744c408d1cded111bc205e10",
+        // },
+        // .vulkan_headers = .{
+        //     .url = "https://github.com/KhronosGroup/Vulkan-Headers/archive/v1.3.283.tar.gz",
+        //     .hash = "1220a7e73d72a0d56bc2a65f9d8999a7c019e42260a0744c408d1cded111bc205e10",
+        // },
+        .glfw = .{
+            .url = "https://github.com/IridescenceTech/zglfw/archive/91e1489ce0032485f02a29902ac5aae9dead6e7a.tar.gz",
+            .hash = "1220f863540d2c2ae8b8345ec33df146ecb2ace77702c2d4c232d868862edb397ddd",
+        },
+    },
+    .paths = .{"."},
+}
