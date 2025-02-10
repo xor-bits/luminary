@@ -4,10 +4,10 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    zig.url = "github:mitchellh/zig-overlay";
+    zigpkgs.url = "github:mitchellh/zig-overlay";
   };
 
-  outputs = { nixpkgs, flake-utils, zig, ... }:
+  outputs = { nixpkgs, flake-utils, zigpkgs, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
@@ -19,7 +19,8 @@
         devShells.default = pkgs.mkShell rec {
           buildInputs = with pkgs; [
             pkg-config
-            zig.packages."${system}".master
+            # zig.packages."${system}".master
+            zig
             glfw
 
             # vulkan-headers

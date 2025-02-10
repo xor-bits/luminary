@@ -12,7 +12,7 @@
         },
         // .vulkan_zig = .{
         //     .url = "https://github.com/Snektron/vulkan-zig/archive/604416bf44baf95568c428e1aa55499aa8e07607.tar.gz",
-        //     .hash = "1220a7e73d72a0d56bc2a65f9d8999a7c019e42260a0744c408d1cded111bc205e10",
+        //     .hash = "1220129ea1652cc0f8578db3dcba254bc9fbc6fdd195b5e1021bf4da8592ea5dc9fb",
         // },
         // .vulkan_headers = .{
         //     .url = "https://github.com/KhronosGroup/Vulkan-Headers/archive/v1.3.283.tar.gz",
@@ -21,6 +21,10 @@
         .glfw = .{
             .url = "https://github.com/IridescenceTech/zglfw/archive/91e1489ce0032485f02a29902ac5aae9dead6e7a.tar.gz",
             .hash = "1220f863540d2c2ae8b8345ec33df146ecb2ace77702c2d4c232d868862edb397ddd",
+        },
+        .vma = .{
+            .url = "https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/c788c52156f3ef7bc7ab769cb03c110a53ac8fcb.tar.gz",
+            .hash = "122087e89339d26bfd23f5eac7f1ca4c6ce05d3e1f59ee18b70150cddd8e779f8509",
         },
     },
     .paths = .{"."},

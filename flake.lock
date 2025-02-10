@@ -88,7 +88,7 @@
       "inputs": {
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs",
-        "zig": "zig"
+        "zigpkgs": "zigpkgs"
       }
     },
     "systems": {
@@ -121,7 +121,7 @@
         "type": "github"
       }
     },
-    "zig": {
+    "zigpkgs": {
       "inputs": {
         "flake-compat": "flake-compat",
         "flake-utils": "flake-utils_2",

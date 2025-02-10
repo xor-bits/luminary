@@ -1,6 +1,7 @@
 pub const std = @import("std");
 pub const vk = @import("vk");
 pub const glfw = @import("glfw");
+pub const vma = @import("vma");
 
 //
 
@@ -50,6 +51,8 @@ pub const Graphics = struct {
     transfer_queue: Queue,
     compute_queue: Queue,
 
+    vma: vma.VmaAllocator,
+
     const Self = @This();
 
     pub fn init(allocator: Allocator, window: *glfw.Window) !*Self {
@@ -76,7 +79,28 @@ pub const Graphics = struct {
 
         log.debug("creating device ..", .{});
         try self.createDevice(gpu);
+        errdefer self.device.destroyDevice(null);
         log.debug("device created", .{});
+
+        const vk_functions = vma.VmaVulkanFunctions{
+            .vkGetInstanceProcAddr = @ptrCast(self.vkb.dispatch.vkGetInstanceProcAddr),
+            .vkGetDeviceProcAddr = @ptrCast(self.vki.dispatch.vkGetDeviceProcAddr),
+        };
+
+        const allocator_create_info = vma.VmaAllocatorCreateInfo{
+            .flags = vma.VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT,
+            .vulkanApiVersion = vma.VK_API_VERSION_1_2,
+            .physicalDevice = @ptrFromInt(@intFromEnum(self.gpu)),
+            .device = @ptrFromInt(@intFromEnum(self.device.handle)),
+            .instance = @ptrFromInt(@intFromEnum(self.instance.handle)),
+            .pVulkanFunctions = &vk_functions,
+        };
+
+        const res = vma.vmaCreateAllocator(&allocator_create_info, &self.vma);
+        if (res != @intFromEnum(vk.Result.success)) {
+            return error.VmaInitFailed;
+        }
+        errdefer vma.vmaDestroyAllocator(self.vma);
 
         return self;
     }
