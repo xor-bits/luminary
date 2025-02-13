@@ -6,6 +6,7 @@ pub const glfw = @import("glfw");
 
 const Swapchain = @import("graphics/swapchain.zig").Swapchain;
 const Vma = @import("graphics/vma.zig").Vma;
+const Frame = @import("graphics/frame.zig").Frame;
 const Counter = @import("counter.zig").Counter;
 
 //
@@ -61,27 +62,13 @@ pub const Graphics = struct {
 
     vma: Vma,
     swapchain: Swapchain,
+    frame: Frame,
 
     fps_counter: Counter,
-    frame: usize,
-    frame_data: [2]FrameData,
 
     start_time_ms: ?i64,
 
     const Self = @This();
-
-    const FrameData = struct {
-        command_pool: vk.CommandPool,
-        main_cbuf: vk.CommandBuffer,
-        index: u32,
-
-        /// render cmds need to wait for the swapchain image
-        swapchain_sema: vk.Semaphore,
-        /// used to present the img once its rendered
-        render_sema: vk.Semaphore,
-        /// used to wait for this frame to be complete
-        render_fence: vk.Fence,
-    };
 
     pub fn init(allocator: Allocator, window: *glfw.Window) !*Self {
         const self = try allocator.create(Graphics);
@@ -134,17 +121,13 @@ pub const Graphics = struct {
         errdefer self.swapchain.deinit(allocator, self.device);
         log.debug("swapchain created", .{});
 
-        log.debug("creating command buffers ..", .{});
-        try self.createCommandBuffers();
-        errdefer self.deinitCommandBuffers();
-        log.debug("command buffers created", .{});
-
-        log.debug("creating frame sync structures ..", .{});
-        try self.createSyncStructs();
-        errdefer self.deinitSyncStructs();
-        log.debug("frame sync structures created", .{});
+        log.debug("creating frames in flight ..", .{});
+        self.frame = try Frame.init(self.device, self.gpu.graphics_family);
+        errdefer self.frame.deinit(self.device);
+        log.debug("frames in flight created", .{});
 
         self.fps_counter = .{};
+        self.start_time_ms = null;
 
         return self;
     }
@@ -152,8 +135,7 @@ pub const Graphics = struct {
     pub fn deinit(self: *Self) void {
         _ = self.device.deviceWaitIdle() catch {};
 
-        self.deinitSyncStructs();
-        self.deinitCommandBuffers();
+        self.frame.deinit(self.device);
         self.swapchain.deinit(self.allocator, self.device);
         self.vma.deinit();
         self.deinitDevice();
@@ -162,20 +144,6 @@ pub const Graphics = struct {
         self.deinitInstance();
 
         self.allocator.destroy(self);
-    }
-
-    fn deinitSyncStructs(self: *Self) void {
-        for (&self.frame_data) |*frame| {
-            self.device.destroySemaphore(frame.render_sema, null);
-            self.device.destroySemaphore(frame.swapchain_sema, null);
-            self.device.destroyFence(frame.render_fence, null);
-        }
-    }
-
-    fn deinitCommandBuffers(self: *Self) void {
-        for (&self.frame_data) |*frame| {
-            self.device.destroyCommandPool(frame.command_pool, null);
-        }
     }
 
     fn deinitDevice(self: *Self) void {
@@ -194,17 +162,10 @@ pub const Graphics = struct {
         self.instance.destroyInstance(null);
     }
 
-    fn currentFrame(self: *Self) *FrameData {
-        return &self.frame_data[self.frame % self.frame_data.len];
-    }
-
     pub fn draw(self: *Self) !void {
-        const frame = self.currentFrame();
+        const frame = self.frame.next();
 
-        if (try self.device.waitForFences(1, @ptrCast(&frame.render_fence), vk.TRUE, 1_000_000_000) != .success) {
-            return error.DrawTimeout;
-        }
-        try self.device.resetFences(1, @ptrCast(&frame.render_fence));
+        try frame.wait(self.device);
 
         const image = try self.swapchain.acquireImage(self.device, frame.swapchain_sema);
         // log.info("draw frame={} image={}", .{ frame.index, image.index });
@@ -227,6 +188,8 @@ pub const Graphics = struct {
         if (self.fps_counter.next(null)) |count| {
             log.info("fps {}", .{count});
         }
+
+        log.info("{d}", .{time_ms});
 
         const clear_ranges = subresource_range(.{ .color_bit = true });
         self.device.cmdClearColorImage(
@@ -281,8 +244,6 @@ pub const Graphics = struct {
             .p_wait_semaphores = @ptrCast(&frame.render_sema),
             .p_image_indices = @ptrCast(&image.index),
         });
-
-        self.frame = (self.frame + 1) % self.frame_data.len;
     }
 
     fn transitionImage(self: *Self, cbuf: vk.CommandBuffer, image: vk.Image, from: vk.ImageLayout, to: vk.ImageLayout) void {
@@ -321,41 +282,6 @@ pub const Graphics = struct {
             .base_array_layer = 0,
             .layer_count = vk.REMAINING_ARRAY_LAYERS,
         };
-    }
-
-    fn createSyncStructs(self: *Self) !void {
-        for (&self.frame_data) |*frame| {
-            // FIXME: leak on err
-
-            frame.render_fence = try self.device.createFence(&vk.FenceCreateInfo{
-                // they are already ready for rendering
-                .flags = .{ .signaled_bit = true },
-            }, null);
-
-            frame.swapchain_sema = try self.device.createSemaphore(&.{}, null);
-            frame.render_sema = try self.device.createSemaphore(&.{}, null);
-        }
-    }
-
-    fn createCommandBuffers(self: *Self) !void {
-        self.frame = 0;
-        self.start_time_ms = null;
-        for (&self.frame_data, 0..) |*frame, i| {
-            // FIXME: leak on err
-
-            frame.index = @truncate(i);
-
-            frame.command_pool = try self.device.createCommandPool(&vk.CommandPoolCreateInfo{
-                .flags = .{ .reset_command_buffer_bit = true },
-                .queue_family_index = self.gpu.graphics_family,
-            }, null);
-
-            try self.device.allocateCommandBuffers(&vk.CommandBufferAllocateInfo{
-                .command_pool = frame.command_pool,
-                .command_buffer_count = 1,
-                .level = .primary,
-            }, @ptrCast(&frame.main_cbuf));
-        }
     }
 
     fn createInstance(self: *Self) !void {
