@@ -71,6 +71,13 @@ pub const Graphics = struct {
     const FrameData = struct {
         command_pool: vk.CommandPool,
         main_cbuf: vk.CommandBuffer,
+
+        /// render cmds need to wait for the swapchain image
+        swapchain_sema: vk.Semaphore,
+        /// used to present the img once its rendered
+        render_sema: vk.Semaphore,
+        /// used to wait for this frame to be complete
+        render_fence: vk.Fence,
     };
 
     pub fn init(allocator: Allocator, window: *glfw.Window) !*Self {
@@ -120,12 +127,18 @@ pub const Graphics = struct {
         errdefer self.deinitCommandBuffers();
         log.debug("command buffers created", .{});
 
+        log.debug("creating frame sync structures ..", .{});
+        try self.createSyncStructs();
+        errdefer self.deinitSyncStructs();
+        log.debug("frame sync structures created", .{});
+
         return self;
     }
 
     pub fn deinit(self: *Self) void {
         _ = self.device.deviceWaitIdle() catch {};
 
+        self.deinitSyncStructs();
         self.deinitCommandBuffers();
         self.deinitSwapchain();
         self.deinitVma();
@@ -135,6 +148,14 @@ pub const Graphics = struct {
         self.deinitInstance();
 
         self.allocator.destroy(self);
+    }
+
+    fn deinitSyncStructs(self: *Self) void {
+        for (&self.frame_data) |*frame| {
+            self.device.destroySemaphore(frame.render_sema, null);
+            self.device.destroySemaphore(frame.swapchain_sema, null);
+            self.device.destroyFence(frame.render_fence, null);
+        }
     }
 
     fn deinitCommandBuffers(self: *Self) void {
@@ -174,6 +195,20 @@ pub const Graphics = struct {
 
     fn currentFrame(self: *Self) *FrameData {
         return &self.frame_data[self.frame % self.frame_data.len];
+    }
+
+    fn createSyncStructs(self: *Self) !void {
+        for (&self.frame_data) |*frame| {
+            // FIXME: leak on err
+
+            frame.render_fence = try self.device.createFence(&vk.FenceCreateInfo{
+                // they are already ready for rendering
+                .flags = .{ .signaled_bit = true },
+            }, null);
+
+            frame.swapchain_sema = try self.device.createSemaphore(&.{}, null);
+            frame.render_sema = try self.device.createSemaphore(&.{}, null);
+        }
     }
 
     fn createCommandBuffers(self: *Self) !void {
