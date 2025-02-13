@@ -1,11 +1,11 @@
 pub const std = @import("std");
 pub const vk = @import("vk");
 pub const glfw = @import("glfw");
-pub const vma = @import("vma");
 
 //
 
 const Swapchain = @import("graphics/swapchain.zig").Swapchain;
+const Vma = @import("graphics/vma.zig").Vma;
 
 //
 
@@ -25,9 +25,9 @@ const apis: []const vk.ApiInfo = &[_]vk.ApiInfo{
 
 const api_version = vk.API_VERSION_1_3;
 
-const BaseDispatch = vk.BaseWrapper(apis);
-const InstanceDispatch = vk.InstanceWrapper(apis);
-const DeviceDispatch = vk.DeviceWrapper(apis);
+pub const BaseDispatch = vk.BaseWrapper(apis);
+pub const InstanceDispatch = vk.InstanceWrapper(apis);
+pub const DeviceDispatch = vk.DeviceWrapper(apis);
 
 pub const Instance = vk.InstanceProxy(apis);
 pub const Device = vk.DeviceProxy(apis);
@@ -58,8 +58,7 @@ pub const Graphics = struct {
     transfer_queue: Queue,
     compute_queue: Queue,
 
-    vma: vma.VmaAllocator,
-
+    vma: Vma,
     swapchain: Swapchain,
 
     second: usize,
@@ -117,8 +116,8 @@ pub const Graphics = struct {
         log.debug("device created", .{});
 
         log.debug("creating vma ..", .{});
-        try self.createVma();
-        errdefer self.deinitVma();
+        self.vma = try Vma.init(&self.vkb, &self.vki, self.instance, self.gpu.gpu, self.device);
+        errdefer self.vma.deinit();
         log.debug("vma created", .{});
 
         log.debug("creating swapchain ..", .{});
@@ -154,7 +153,7 @@ pub const Graphics = struct {
         self.deinitSyncStructs();
         self.deinitCommandBuffers();
         self.swapchain.deinit(self.allocator, self.device);
-        self.deinitVma();
+        self.vma.deinit();
         self.deinitDevice();
         self.deinitSurface();
         self.deinitDebugMessenger();
@@ -175,10 +174,6 @@ pub const Graphics = struct {
         for (&self.frame_data) |*frame| {
             self.device.destroyCommandPool(frame.command_pool, null);
         }
-    }
-
-    fn deinitVma(self: *Self) void {
-        vma.vmaDestroyAllocator(self.vma);
     }
 
     fn deinitDevice(self: *Self) void {
@@ -365,28 +360,6 @@ pub const Graphics = struct {
                 .level = .primary,
             }, @ptrCast(&frame.main_cbuf));
         }
-    }
-
-    fn createVma(self: *Self) !void {
-        const vk_functions = vma.VmaVulkanFunctions{
-            .vkGetInstanceProcAddr = @ptrCast(self.vkb.dispatch.vkGetInstanceProcAddr),
-            .vkGetDeviceProcAddr = @ptrCast(self.vki.dispatch.vkGetDeviceProcAddr),
-        };
-
-        const allocator_create_info = vma.VmaAllocatorCreateInfo{
-            .flags = vma.VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT,
-            .vulkanApiVersion = vma.VK_API_VERSION_1_2,
-            .physicalDevice = @ptrFromInt(@intFromEnum(self.gpu.gpu)),
-            .device = @ptrFromInt(@intFromEnum(self.device.handle)),
-            .instance = @ptrFromInt(@intFromEnum(self.instance.handle)),
-            .pVulkanFunctions = &vk_functions,
-        };
-
-        const res = vma.vmaCreateAllocator(&allocator_create_info, &self.vma);
-        if (res != @intFromEnum(vk.Result.success)) {
-            return error.VmaInitFailed;
-        }
-        errdefer vma.vmaDestroyAllocator(self.vma);
     }
 
     fn createInstance(self: *Self) !void {
