@@ -9,14 +9,17 @@ const log = std.log.scoped(.graphics);
 
 const required_device_extensions = [_][*:0]const u8{vk.extensions.khr_swapchain.name};
 
-const apis: []const vk.ApiInfo = &.{
+const apis: []const vk.ApiInfo = &[_]vk.ApiInfo{
     vk.features.version_1_0,
     vk.features.version_1_1,
     vk.features.version_1_2,
+    vk.features.version_1_3,
     vk.extensions.khr_surface,
     vk.extensions.khr_swapchain,
     vk.extensions.ext_debug_utils,
 };
+
+const api_version = vk.API_VERSION_1_3;
 
 const BaseDispatch = vk.BaseWrapper(apis);
 const InstanceDispatch = vk.InstanceWrapper(apis);
@@ -57,20 +60,27 @@ pub const Graphics = struct {
     swapchain_format: vk.Format,
     swapchain_extent: vk.Extent2D,
     swapchain_images: []SwapchainImage,
+    swapchain_suboptimal: bool,
 
+    second: usize,
+    frame_counter: usize,
     frame: usize,
     frame_data: [2]FrameData,
+
+    start_time_ms: ?i64,
 
     const Self = @This();
 
     const SwapchainImage = struct {
         image: vk.Image,
         view: vk.ImageView,
+        index: u32,
     };
 
     const FrameData = struct {
         command_pool: vk.CommandPool,
         main_cbuf: vk.CommandBuffer,
+        index: u32,
 
         /// render cmds need to wait for the swapchain image
         swapchain_sema: vk.Semaphore,
@@ -197,6 +207,157 @@ pub const Graphics = struct {
         return &self.frame_data[self.frame % self.frame_data.len];
     }
 
+    pub fn draw(self: *Self) !void {
+        const frame = self.currentFrame();
+
+        if (try self.device.waitForFences(1, @ptrCast(&frame.render_fence), vk.TRUE, 1_000_000_000) != .success) {
+            return error.DrawTimeout;
+        }
+        try self.device.resetFences(1, @ptrCast(&frame.render_fence));
+
+        const image = try self.acquireImage(frame);
+        // log.info("draw frame={} image={}", .{ frame.index, image.index });
+
+        try self.device.resetCommandBuffer(frame.main_cbuf, .{});
+        try self.device.beginCommandBuffer(frame.main_cbuf, &vk.CommandBufferBeginInfo{
+            .flags = .{ .one_time_submit_bit = true },
+        });
+
+        self.transitionImage(frame.main_cbuf, image.image, .undefined, .general);
+
+        const now_ms: i64 = std.time.milliTimestamp();
+        const start_time_ms: i64 = self.start_time_ms orelse blk: {
+            self.start_time_ms = now_ms;
+            break :blk now_ms;
+        };
+        const time_ms = now_ms - start_time_ms;
+        const time_sec = @as(f64, @floatFromInt(time_ms)) / 1000.0;
+        const time_sec_int = @as(usize, @intCast(@divFloor(time_ms, 1000)));
+
+        self.frame_counter += 1;
+        if (time_sec_int > self.second) {
+            self.second = time_sec_int;
+            log.info("fps (approx) {}", .{self.frame_counter});
+            self.frame_counter = 0;
+        }
+
+        const clear_ranges = subresource_range(.{ .color_bit = true });
+        self.device.cmdClearColorImage(
+            frame.main_cbuf,
+            image.image,
+            .general,
+            &vk.ClearColorValue{
+                .float_32 = .{ @as(f32, @floatCast(std.math.sin(time_sec))) * 0.5 + 0.5, 0.0, 0.0, 1.0 },
+            },
+            1,
+            @ptrCast(&clear_ranges),
+        );
+
+        self.transitionImage(frame.main_cbuf, image.image, .general, .present_src_khr);
+
+        try self.device.endCommandBuffer(frame.main_cbuf);
+
+        const wait_info = vk.SemaphoreSubmitInfo{
+            .semaphore = frame.swapchain_sema,
+            .stage_mask = .{ .color_attachment_output_bit = true },
+            .device_index = 0,
+            .value = 1,
+        };
+
+        const signal_info = vk.SemaphoreSubmitInfo{
+            .semaphore = frame.render_sema,
+            .stage_mask = .{ .all_graphics_bit = true },
+            .device_index = 0,
+            .value = 1,
+        };
+
+        const cmd_info = vk.CommandBufferSubmitInfo{
+            .command_buffer = frame.main_cbuf,
+            .device_mask = 0,
+        };
+
+        const submit_info = vk.SubmitInfo2{
+            .wait_semaphore_info_count = 1,
+            .p_wait_semaphore_infos = @ptrCast(&wait_info),
+            .signal_semaphore_info_count = 1,
+            .p_signal_semaphore_infos = @ptrCast(&signal_info),
+            .command_buffer_info_count = 1,
+            .p_command_buffer_infos = @ptrCast(&cmd_info),
+        };
+
+        try self.graphics_queue.submit2(1, @ptrCast(&submit_info), frame.render_fence);
+
+        _ = try self.present_queue.presentKHR(&vk.PresentInfoKHR{
+            .p_swapchains = @ptrCast(&self.swapchain),
+            .swapchain_count = 1,
+            .wait_semaphore_count = 1,
+            .p_wait_semaphores = @ptrCast(&frame.render_sema),
+            .p_image_indices = @ptrCast(&image.index),
+        });
+
+        self.frame = (self.frame + 1) % self.frame_data.len;
+    }
+
+    fn transitionImage(self: *Self, cbuf: vk.CommandBuffer, image: vk.Image, from: vk.ImageLayout, to: vk.ImageLayout) void {
+        const image_barrier = vk.ImageMemoryBarrier2{
+            // the swapchain image is a copy destination
+            .src_stage_mask = .{ .all_commands_bit = true },
+            .src_access_mask = .{ .memory_write_bit = true },
+            // the new layout is read+write render target
+            .dst_stage_mask = .{ .all_commands_bit = true },
+            .dst_access_mask = .{ .memory_write_bit = true, .memory_read_bit = true },
+
+            .old_layout = from,
+            .new_layout = to,
+
+            .src_queue_family_index = 0,
+            .dst_queue_family_index = 0,
+
+            .subresource_range = subresource_range(vk.ImageAspectFlags{
+                .color_bit = to != .depth_stencil_attachment_optimal,
+                .depth_bit = to == .depth_stencil_attachment_optimal,
+            }),
+            .image = image,
+        };
+
+        self.device.cmdPipelineBarrier2(cbuf, &vk.DependencyInfo{
+            .image_memory_barrier_count = 1,
+            .p_image_memory_barriers = @ptrCast(&image_barrier),
+        });
+    }
+
+    fn subresource_range(aspect: vk.ImageAspectFlags) vk.ImageSubresourceRange {
+        return .{
+            .aspect_mask = aspect,
+            .base_mip_level = 0,
+            .level_count = vk.REMAINING_MIP_LEVELS,
+            .base_array_layer = 0,
+            .layer_count = vk.REMAINING_ARRAY_LAYERS,
+        };
+    }
+
+    fn acquireImage(self: *Self, frame: *FrameData) !*SwapchainImage {
+        while (true) {
+            if (self.swapchain_suboptimal) {
+                // TODO: recreate swapchain
+                // const old_swapchain = self.swapchain;
+                // self.createSwapchain(old_swapchain);
+                // self.
+            }
+
+            const result = try self.device.acquireNextImageKHR(self.swapchain, 1_000_000_000, frame.swapchain_sema, .null_handle);
+            if (result.result == .suboptimal_khr) {
+                self.swapchain_suboptimal = true;
+            } else if (result.result == .timeout) {
+                return error.SwapchainTimeout;
+            } else if (result.result == .not_ready) {
+                return error.SwapchainNotReady;
+            }
+
+            return &self.swapchain_images[result.image_index];
+        }
+    }
+
     fn createSyncStructs(self: *Self) !void {
         for (&self.frame_data) |*frame| {
             // FIXME: leak on err
@@ -212,8 +373,14 @@ pub const Graphics = struct {
     }
 
     fn createCommandBuffers(self: *Self) !void {
-        for (&self.frame_data) |*frame| {
+        self.frame = 0;
+        self.frame_counter = 0;
+        self.second = 0;
+        self.start_time_ms = null;
+        for (&self.frame_data, 0..) |*frame, i| {
             // FIXME: leak on err
+
+            frame.index = @truncate(i);
 
             frame.command_pool = try self.device.createCommandPool(&vk.CommandPoolCreateInfo{
                 .flags = .{ .reset_command_buffer_bit = true },
@@ -289,6 +456,7 @@ pub const Graphics = struct {
         errdefer self.device.destroySwapchainKHR(self.swapchain, null);
         self.swapchain_format = create_info.image_format;
         self.swapchain_extent = create_info.image_extent;
+        self.swapchain_suboptimal = false;
 
         const images = try self.device.getSwapchainImagesAllocKHR(self.swapchain, self.allocator);
         defer self.allocator.free(images);
@@ -298,6 +466,7 @@ pub const Graphics = struct {
 
         for (images, self.swapchain_images, 0..) |image, *saved_image, i| {
             saved_image.image = image;
+            saved_image.index = @truncate(i);
 
             const image_view = self.device.createImageView(&vk.ImageViewCreateInfo{
                 .image = image,
@@ -383,6 +552,13 @@ pub const Graphics = struct {
     }
 
     fn createInstance(self: *Self) !void {
+        const version = try self.vkb.enumerateInstanceVersion();
+        log.info("Instance API version: {}.{}.{}", .{
+            vk.apiVersionMajor(version),
+            vk.apiVersionMinor(version),
+            vk.apiVersionPatch(version),
+        });
+
         var glfw_exts_count: u32 = 0;
         const glfw_exts = glfw.getRequiredInstanceExtensions(&glfw_exts_count) orelse &[0][*]const u8{};
 
@@ -412,7 +588,7 @@ pub const Graphics = struct {
                 .application_version = vk.makeApiVersion(0, 0, 0, 0),
                 .p_engine_name = "luminary",
                 .engine_version = vk.makeApiVersion(0, 0, 0, 0),
-                .api_version = vk.API_VERSION_1_2,
+                .api_version = api_version,
             },
             .enabled_extension_count = @truncate(extensions.items.len),
             .pp_enabled_extension_names = @ptrCast(extensions.items.ptr),
@@ -491,7 +667,13 @@ pub const Graphics = struct {
             }
         }
 
+        const features_13 = vk.PhysicalDeviceVulkan13Features{
+            .synchronization_2 = vk.TRUE,
+            .maintenance_4 = vk.TRUE,
+        };
+
         const device = try self.instance.createDevice(self.gpu.gpu, &vk.DeviceCreateInfo{
+            .p_next = &features_13,
             .queue_create_info_count = @truncate(queue_create_infos.items.len),
             .p_queue_create_infos = queue_create_infos.items.ptr,
             .enabled_extension_count = @truncate(required_device_extensions.len),
@@ -538,6 +720,17 @@ pub const Graphics = struct {
 
         self.gpu = best_gpu orelse return error.NoSuitableGpus;
         self.gpu.mem_props = self.instance.getPhysicalDeviceMemoryProperties(self.gpu.gpu);
+
+        log.info("GPU API version: {}.{}.{}", .{
+            vk.apiVersionMajor(self.gpu.props.api_version),
+            vk.apiVersionMinor(self.gpu.props.api_version),
+            vk.apiVersionPatch(self.gpu.props.api_version),
+        });
+        log.info("GPU Driver version: {}.{}.{}", .{
+            vk.apiVersionMajor(self.gpu.props.driver_version),
+            vk.apiVersionMinor(self.gpu.props.driver_version),
+            vk.apiVersionPatch(self.gpu.props.driver_version),
+        });
     }
 
     const GpuCandidate = struct {

@@ -50,10 +50,12 @@ pub fn main() !void {
     log.info("running main loop", .{});
 
     while (!glfw.windowShouldClose(window)) {
+        try g.draw();
+
+        glfw.pollEvents();
+
         if (glfw.getKey(window, glfw.KeyEscape) == glfw.Press) {
             glfw.setWindowShouldClose(window, true);
         }
-
-        glfw.pollEvents();
     }
 }
