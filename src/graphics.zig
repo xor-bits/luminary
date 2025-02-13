@@ -115,10 +115,18 @@ pub const Graphics = struct {
         errdefer self.deinitSwapchain();
         log.debug("swapchain created", .{});
 
+        log.debug("creating command buffers ..", .{});
+        try self.createCommandBuffers();
+        errdefer self.deinitCommandBuffers();
+        log.debug("command buffers created", .{});
+
         return self;
     }
 
     pub fn deinit(self: *Self) void {
+        _ = self.device.deviceWaitIdle() catch {};
+
+        self.deinitCommandBuffers();
         self.deinitSwapchain();
         self.deinitVma();
         self.deinitDevice();
@@ -127,6 +135,12 @@ pub const Graphics = struct {
         self.deinitInstance();
 
         self.allocator.destroy(self);
+    }
+
+    fn deinitCommandBuffers(self: *Self) void {
+        for (&self.frame_data) |*frame| {
+            self.device.destroyCommandPool(frame.command_pool, null);
+        }
     }
 
     fn deinitSwapchain(self: *Self) void {
@@ -160,6 +174,23 @@ pub const Graphics = struct {
 
     fn currentFrame(self: *Self) *FrameData {
         return &self.frame_data[self.frame % self.frame_data.len];
+    }
+
+    fn createCommandBuffers(self: *Self) !void {
+        for (&self.frame_data) |*frame| {
+            // FIXME: leak on err
+
+            frame.command_pool = try self.device.createCommandPool(&vk.CommandPoolCreateInfo{
+                .flags = .{ .reset_command_buffer_bit = true },
+                .queue_family_index = self.gpu.graphics_family,
+            }, null);
+
+            try self.device.allocateCommandBuffers(&vk.CommandBufferAllocateInfo{
+                .command_pool = frame.command_pool,
+                .command_buffer_count = 1,
+                .level = .primary,
+            }, @ptrCast(&frame.main_cbuf));
+        }
     }
 
     fn createSwapchain(self: *Self, old_swapchain: vk.SwapchainKHR) !void {
