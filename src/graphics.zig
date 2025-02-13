@@ -6,6 +6,7 @@ pub const glfw = @import("glfw");
 
 const Swapchain = @import("graphics/swapchain.zig").Swapchain;
 const Vma = @import("graphics/vma.zig").Vma;
+const Counter = @import("counter.zig").Counter;
 
 //
 
@@ -61,8 +62,7 @@ pub const Graphics = struct {
     vma: Vma,
     swapchain: Swapchain,
 
-    second: usize,
-    frame_counter: usize,
+    fps_counter: Counter,
     frame: usize,
     frame_data: [2]FrameData,
 
@@ -144,6 +144,8 @@ pub const Graphics = struct {
         errdefer self.deinitSyncStructs();
         log.debug("frame sync structures created", .{});
 
+        self.fps_counter = .{};
+
         return self;
     }
 
@@ -221,13 +223,9 @@ pub const Graphics = struct {
         };
         const time_ms = now_ms - start_time_ms;
         const time_sec = @as(f64, @floatFromInt(time_ms)) / 1000.0;
-        const time_sec_int = @as(usize, @intCast(@divFloor(time_ms, 1000)));
 
-        self.frame_counter += 1;
-        if (time_sec_int > self.second) {
-            self.second = time_sec_int;
-            log.info("fps (approx) {}", .{self.frame_counter});
-            self.frame_counter = 0;
+        if (self.fps_counter.next(null)) |count| {
+            log.info("fps {}", .{count});
         }
 
         const clear_ranges = subresource_range(.{ .color_bit = true });
@@ -341,8 +339,6 @@ pub const Graphics = struct {
 
     fn createCommandBuffers(self: *Self) !void {
         self.frame = 0;
-        self.frame_counter = 0;
-        self.second = 0;
         self.start_time_ms = null;
         for (&self.frame_data, 0..) |*frame, i| {
             // FIXME: leak on err
