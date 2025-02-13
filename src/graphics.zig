@@ -43,9 +43,7 @@ pub const Graphics = struct {
     instance: Instance,
     debug_messenger: vk.DebugUtilsMessengerEXT,
     surface: vk.SurfaceKHR,
-    gpu: vk.PhysicalDevice,
-    props: vk.PhysicalDeviceProperties,
-    mem_props: vk.PhysicalDeviceMemoryProperties,
+    gpu: GpuCandidate,
     device: Device,
 
     graphics_queue: Queue,
@@ -55,7 +53,25 @@ pub const Graphics = struct {
 
     vma: vma.VmaAllocator,
 
+    swapchain: vk.SwapchainKHR,
+    swapchain_format: vk.Format,
+    swapchain_extent: vk.Extent2D,
+    swapchain_images: []SwapchainImage,
+
+    frame: usize,
+    frame_data: [2]FrameData,
+
     const Self = @This();
+
+    const SwapchainImage = struct {
+        image: vk.Image,
+        view: vk.ImageView,
+    };
+
+    const FrameData = struct {
+        command_pool: vk.CommandPool,
+        main_cbuf: vk.CommandBuffer,
+    };
 
     pub fn init(allocator: Allocator, window: *glfw.Window) !*Self {
         const self = try allocator.create(Graphics);
@@ -67,28 +83,218 @@ pub const Graphics = struct {
 
         log.debug("creating instance ..", .{});
         try self.createInstance();
-        errdefer self.instance.destroyInstance(null);
+        errdefer self.deinitInstance();
         log.debug("instance created", .{});
 
         log.debug("creating debug messenger ..", .{});
         try self.createDebugMessenger();
-        errdefer self.instance.destroyDebugUtilsMessengerEXT(self.debug_messenger, null);
+        errdefer self.deinitDebugMessenger();
         log.debug("debug messenger created", .{});
 
         log.debug("creating surface ..", .{});
         try self.createSurface();
-        errdefer self.instance.destroySurfaceKHR(self.surface, null);
+        errdefer self.deinitSurface();
         log.debug("surface created", .{});
 
         log.debug("picking GPU ..", .{});
-        const gpu = try self.pickGpu();
-        log.info("GPU picked: {s}", .{std.mem.sliceTo(&gpu.props.device_name, 0)});
+        try self.pickGpu();
+        log.info("GPU picked: {s}", .{std.mem.sliceTo(&self.gpu.props.device_name, 0)});
 
         log.debug("creating device ..", .{});
-        try self.createDevice(gpu);
-        errdefer self.device.destroyDevice(null);
+        try self.createDevice();
+        errdefer self.deinitDevice();
         log.debug("device created", .{});
 
+        log.debug("creating vma ..", .{});
+        try self.createVma();
+        errdefer self.deinitVma();
+        log.debug("vma created", .{});
+
+        log.debug("creating swapchain ..", .{});
+        try self.createSwapchain(.null_handle);
+        errdefer self.deinitSwapchain();
+        log.debug("swapchain created", .{});
+
+        return self;
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.deinitSwapchain();
+        self.deinitVma();
+        self.deinitDevice();
+        self.deinitSurface();
+        self.deinitDebugMessenger();
+        self.deinitInstance();
+
+        self.allocator.destroy(self);
+    }
+
+    fn deinitSwapchain(self: *Self) void {
+        for (self.swapchain_images) |*image| {
+            self.device.destroyImageView(image.view, null);
+        }
+        self.allocator.free(self.swapchain_images);
+
+        self.device.destroySwapchainKHR(self.swapchain, null);
+    }
+
+    fn deinitVma(self: *Self) void {
+        vma.vmaDestroyAllocator(self.vma);
+    }
+
+    fn deinitDevice(self: *Self) void {
+        self.device.destroyDevice(null);
+    }
+
+    fn deinitSurface(self: *Self) void {
+        self.instance.destroySurfaceKHR(self.surface, null);
+    }
+
+    fn deinitDebugMessenger(self: *Self) void {
+        self.instance.destroyDebugUtilsMessengerEXT(self.debug_messenger, null);
+    }
+
+    fn deinitInstance(self: *Self) void {
+        self.instance.destroyInstance(null);
+    }
+
+    fn currentFrame(self: *Self) *FrameData {
+        return &self.frame_data[self.frame % self.frame_data.len];
+    }
+
+    fn createSwapchain(self: *Self, old_swapchain: vk.SwapchainKHR) !void {
+        const surface_formats = try self.instance.getPhysicalDeviceSurfaceFormatsAllocKHR(self.gpu.gpu, self.surface, self.allocator);
+        const surface_format = try preferred_format(surface_formats);
+
+        const present_modes = try self.instance.getPhysicalDeviceSurfacePresentModesAllocKHR(self.gpu.gpu, self.surface, self.allocator);
+        const present_mode = try preferred_present_mode(present_modes);
+
+        var w: i32 = undefined;
+        var h: i32 = undefined;
+        glfw.getFramebufferSize(self.window, &w, &h);
+        if (w <= 0 or h <= 0) {
+            return error.InvalidWindowSize;
+        }
+
+        const caps = try self.instance.getPhysicalDeviceSurfaceCapabilitiesKHR(self.gpu.gpu, self.surface);
+
+        const extent = vk.Extent2D{
+            .width = @max(@min(@as(u32, @intCast(w)), caps.max_image_extent.width), caps.min_image_extent.width),
+            .height = @max(@min(@as(u32, @intCast(h)), caps.max_image_extent.height), caps.min_image_extent.height),
+        };
+
+        var create_info = vk.SwapchainCreateInfoKHR{
+            .surface = self.surface,
+            .image_sharing_mode = undefined,
+            .image_format = surface_format.format,
+            .image_color_space = surface_format.color_space,
+            .present_mode = present_mode,
+            .image_extent = extent,
+            .min_image_count = 0,
+            .image_array_layers = 1,
+            .image_usage = .{
+                // .color_attachment_bit = true, // render to a custom image and copy it over
+                .transfer_dst_bit = true,
+            },
+            .pre_transform = .{ .identity_bit_khr = true },
+            .composite_alpha = .{ .opaque_bit_khr = true },
+            .clipped = vk.TRUE,
+            .old_swapchain = old_swapchain,
+        };
+
+        create_info.min_image_count = caps.min_image_count + 1;
+        if (caps.max_image_count != 0 and create_info.min_image_count > caps.max_image_count) {
+            // max image count 0 means there is no max
+            create_info.min_image_count = caps.max_image_count;
+        }
+
+        const queue_family_indices = .{ self.gpu.graphics_family, self.gpu.present_family };
+        if (self.gpu.graphics_family == self.gpu.present_family) {
+            create_info.image_sharing_mode = .exclusive;
+            create_info.queue_family_index_count = 0;
+            create_info.p_queue_family_indices = null;
+        } else {
+            create_info.image_sharing_mode = .concurrent;
+            create_info.queue_family_index_count = 2;
+            create_info.p_queue_family_indices = @ptrCast(&queue_family_indices);
+        }
+
+        self.swapchain = try self.device.createSwapchainKHR(&create_info, null);
+        errdefer self.device.destroySwapchainKHR(self.swapchain, null);
+        self.swapchain_format = create_info.image_format;
+        self.swapchain_extent = create_info.image_extent;
+
+        const images = try self.device.getSwapchainImagesAllocKHR(self.swapchain, self.allocator);
+        defer self.allocator.free(images);
+
+        self.swapchain_images = try self.allocator.alloc(SwapchainImage, images.len);
+        errdefer self.allocator.free(self.swapchain_images);
+
+        for (images, self.swapchain_images, 0..) |image, *saved_image, i| {
+            saved_image.image = image;
+
+            const image_view = self.device.createImageView(&vk.ImageViewCreateInfo{
+                .image = image,
+                .view_type = .@"2d",
+                .format = create_info.image_format,
+                .components = .{
+                    .r = .identity,
+                    .g = .identity,
+                    .b = .identity,
+                    .a = .identity,
+                },
+                .subresource_range = .{
+                    .aspect_mask = .{ .color_bit = true },
+                    .base_mip_level = 0,
+                    .level_count = 1,
+                    .base_array_layer = 0,
+                    .layer_count = 1,
+                },
+            }, null);
+
+            saved_image.view = image_view catch |err| {
+                for (self.swapchain_images, 0..i) |*deleting_view, _| {
+                    self.device.destroyImageView(deleting_view.view, null);
+                }
+                return err;
+            };
+        }
+    }
+
+    fn preferred_format(avail: []vk.SurfaceFormatKHR) !vk.SurfaceFormatKHR {
+        if (avail.len == 0) {
+            return error.NoSurfaceFormats;
+        }
+
+        // use B8G8R8A8_UNORM SRGB_NONLINEAR if its there
+        for (avail) |avl| {
+            if (avl.format == .b8g8r8a8_unorm and avl.color_space == .srgb_nonlinear_khr) {
+                return avl;
+            }
+        }
+
+        return avail[0];
+    }
+
+    fn preferred_present_mode(avail: []vk.PresentModeKHR) !vk.PresentModeKHR {
+        // use MAILBOX if its there
+        for (avail) |avl| {
+            if (avl == .mailbox_khr) {
+                return avl;
+            }
+        }
+
+        // // fallback to IMMEDIATE
+        // for (avail) |avl| {
+        //     if (avl == .immediate_khr) {
+        //         return avl;
+        //     }
+        // }
+
+        return vk.PresentModeKHR.fifo_khr;
+    }
+
+    fn createVma(self: *Self) !void {
         const vk_functions = vma.VmaVulkanFunctions{
             .vkGetInstanceProcAddr = @ptrCast(self.vkb.dispatch.vkGetInstanceProcAddr),
             .vkGetDeviceProcAddr = @ptrCast(self.vki.dispatch.vkGetDeviceProcAddr),
@@ -97,7 +303,7 @@ pub const Graphics = struct {
         const allocator_create_info = vma.VmaAllocatorCreateInfo{
             .flags = vma.VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT,
             .vulkanApiVersion = vma.VK_API_VERSION_1_2,
-            .physicalDevice = @ptrFromInt(@intFromEnum(self.gpu)),
+            .physicalDevice = @ptrFromInt(@intFromEnum(self.gpu.gpu)),
             .device = @ptrFromInt(@intFromEnum(self.device.handle)),
             .instance = @ptrFromInt(@intFromEnum(self.instance.handle)),
             .pVulkanFunctions = &vk_functions,
@@ -108,17 +314,6 @@ pub const Graphics = struct {
             return error.VmaInitFailed;
         }
         errdefer vma.vmaDestroyAllocator(self.vma);
-
-        return self;
-    }
-
-    pub fn deinit(self: *Self) void {
-        vma.vmaDestroyAllocator(self.vma);
-        self.device.destroyDevice(null);
-        self.instance.destroySurfaceKHR(self.surface, null);
-        self.instance.destroyDebugUtilsMessengerEXT(self.debug_messenger, null);
-        self.instance.destroyInstance(null);
-        self.allocator.destroy(self);
     }
 
     fn createInstance(self: *Self) !void {
@@ -181,26 +376,26 @@ pub const Graphics = struct {
         }, null);
     }
 
-    fn createDevice(self: *Self, gpu: GpuCandidate) !void {
+    fn createDevice(self: *Self) !void {
         const priority = [_]f32{1};
         var queue_create_infos_buf = [_]vk.DeviceQueueCreateInfo{
             vk.DeviceQueueCreateInfo{
-                .queue_family_index = gpu.graphics_family,
+                .queue_family_index = self.gpu.graphics_family,
                 .queue_count = 1,
                 .p_queue_priorities = &priority,
             },
             vk.DeviceQueueCreateInfo{
-                .queue_family_index = gpu.present_family,
+                .queue_family_index = self.gpu.present_family,
                 .queue_count = 1,
                 .p_queue_priorities = &priority,
             },
             vk.DeviceQueueCreateInfo{
-                .queue_family_index = gpu.transfer_family,
+                .queue_family_index = self.gpu.transfer_family,
                 .queue_count = 1,
                 .p_queue_priorities = &priority,
             },
             vk.DeviceQueueCreateInfo{
-                .queue_family_index = gpu.compute_family,
+                .queue_family_index = self.gpu.compute_family,
                 .queue_count = 1,
                 .p_queue_priorities = &priority,
             },
@@ -230,7 +425,7 @@ pub const Graphics = struct {
             }
         }
 
-        const device = try self.instance.createDevice(self.gpu, &vk.DeviceCreateInfo{
+        const device = try self.instance.createDevice(self.gpu.gpu, &vk.DeviceCreateInfo{
             .queue_create_info_count = @truncate(queue_create_infos.items.len),
             .p_queue_create_infos = queue_create_infos.items.ptr,
             .enabled_extension_count = @truncate(required_device_extensions.len),
@@ -241,10 +436,10 @@ pub const Graphics = struct {
         self.device = Device.init(device, &self.vkd);
         errdefer self.device.destroyDevice(null);
 
-        const graphics_queue = self.device.getDeviceQueue(gpu.graphics_family, 0);
-        const present_queue = self.device.getDeviceQueue(gpu.present_family, 0);
-        const transfer_queue = self.device.getDeviceQueue(gpu.transfer_family, 0);
-        const compute_queue = self.device.getDeviceQueue(gpu.compute_family, 0);
+        const graphics_queue = self.device.getDeviceQueue(self.gpu.graphics_family, 0);
+        const present_queue = self.device.getDeviceQueue(self.gpu.present_family, 0);
+        const transfer_queue = self.device.getDeviceQueue(self.gpu.transfer_family, 0);
+        const compute_queue = self.device.getDeviceQueue(self.gpu.compute_family, 0);
 
         self.graphics_queue = Queue.init(graphics_queue, &self.vkd);
         self.present_queue = Queue.init(present_queue, &self.vkd);
@@ -252,7 +447,7 @@ pub const Graphics = struct {
         self.compute_queue = Queue.init(compute_queue, &self.vkd);
     }
 
-    fn pickGpu(self: *Self) !GpuCandidate {
+    fn pickGpu(self: *Self) !void {
         const gpus = try self.instance.enumeratePhysicalDevicesAlloc(self.allocator);
         defer self.allocator.free(gpus);
 
@@ -275,17 +470,14 @@ pub const Graphics = struct {
             }
         }
 
-        const gpu = best_gpu orelse return error.NoSuitableGpus;
-        self.gpu = gpu.gpu;
-        self.props = gpu.props;
-        self.mem_props = self.instance.getPhysicalDeviceMemoryProperties(gpu.gpu);
-
-        return gpu;
+        self.gpu = best_gpu orelse return error.NoSuitableGpus;
+        self.gpu.mem_props = self.instance.getPhysicalDeviceMemoryProperties(self.gpu.gpu);
     }
 
     const GpuCandidate = struct {
         gpu: vk.PhysicalDevice,
         props: vk.PhysicalDeviceProperties,
+        mem_props: vk.PhysicalDeviceMemoryProperties,
         score: usize,
         graphics_family: u32,
         present_family: u32,
@@ -358,6 +550,7 @@ pub const Graphics = struct {
             .gpu = gpu,
             .score = scoreOf(&props),
             .props = props,
+            .mem_props = undefined,
             .graphics_family = graphics_family,
             .present_family = present_family,
             .transfer_family = transfer_family,
