@@ -5,6 +5,10 @@ pub const vma = @import("vma");
 
 //
 
+const Swapchain = @import("graphics/swapchain.zig").Swapchain;
+
+//
+
 const log = std.log.scoped(.graphics);
 
 const required_device_extensions = [_][*:0]const u8{vk.extensions.khr_swapchain.name};
@@ -25,10 +29,10 @@ const BaseDispatch = vk.BaseWrapper(apis);
 const InstanceDispatch = vk.InstanceWrapper(apis);
 const DeviceDispatch = vk.DeviceWrapper(apis);
 
-const Instance = vk.InstanceProxy(apis);
-const Device = vk.DeviceProxy(apis);
-const CommandBuffer = vk.CommandBufferProxy(apis);
-const Queue = vk.QueueProxy(apis);
+pub const Instance = vk.InstanceProxy(apis);
+pub const Device = vk.DeviceProxy(apis);
+pub const CommandBuffer = vk.CommandBufferProxy(apis);
+pub const Queue = vk.QueueProxy(apis);
 
 pub const Allocator = std.mem.Allocator;
 
@@ -56,11 +60,7 @@ pub const Graphics = struct {
 
     vma: vma.VmaAllocator,
 
-    swapchain: vk.SwapchainKHR,
-    swapchain_format: vk.Format,
-    swapchain_extent: vk.Extent2D,
-    swapchain_images: []SwapchainImage,
-    swapchain_suboptimal: bool,
+    swapchain: Swapchain,
 
     second: usize,
     frame_counter: usize,
@@ -70,12 +70,6 @@ pub const Graphics = struct {
     start_time_ms: ?i64,
 
     const Self = @This();
-
-    const SwapchainImage = struct {
-        image: vk.Image,
-        view: vk.ImageView,
-        index: u32,
-    };
 
     const FrameData = struct {
         command_pool: vk.CommandPool,
@@ -128,8 +122,17 @@ pub const Graphics = struct {
         log.debug("vma created", .{});
 
         log.debug("creating swapchain ..", .{});
-        try self.createSwapchain(.null_handle);
-        errdefer self.deinitSwapchain();
+        self.swapchain = try Swapchain.init(
+            self.allocator,
+            self.instance,
+            self.gpu.gpu,
+            self.gpu.graphics_family,
+            self.gpu.present_family,
+            self.device,
+            self.surface,
+            window,
+        );
+        errdefer self.swapchain.deinit(allocator, self.device);
         log.debug("swapchain created", .{});
 
         log.debug("creating command buffers ..", .{});
@@ -150,7 +153,7 @@ pub const Graphics = struct {
 
         self.deinitSyncStructs();
         self.deinitCommandBuffers();
-        self.deinitSwapchain();
+        self.swapchain.deinit(self.allocator, self.device);
         self.deinitVma();
         self.deinitDevice();
         self.deinitSurface();
@@ -172,15 +175,6 @@ pub const Graphics = struct {
         for (&self.frame_data) |*frame| {
             self.device.destroyCommandPool(frame.command_pool, null);
         }
-    }
-
-    fn deinitSwapchain(self: *Self) void {
-        for (self.swapchain_images) |*image| {
-            self.device.destroyImageView(image.view, null);
-        }
-        self.allocator.free(self.swapchain_images);
-
-        self.device.destroySwapchainKHR(self.swapchain, null);
     }
 
     fn deinitVma(self: *Self) void {
@@ -215,7 +209,7 @@ pub const Graphics = struct {
         }
         try self.device.resetFences(1, @ptrCast(&frame.render_fence));
 
-        const image = try self.acquireImage(frame);
+        const image = try self.swapchain.acquireImage(self.device, frame.swapchain_sema);
         // log.info("draw frame={} image={}", .{ frame.index, image.index });
 
         try self.device.resetCommandBuffer(frame.main_cbuf, .{});
@@ -336,28 +330,6 @@ pub const Graphics = struct {
         };
     }
 
-    fn acquireImage(self: *Self, frame: *FrameData) !*SwapchainImage {
-        while (true) {
-            if (self.swapchain_suboptimal) {
-                // TODO: recreate swapchain
-                // const old_swapchain = self.swapchain;
-                // self.createSwapchain(old_swapchain);
-                // self.
-            }
-
-            const result = try self.device.acquireNextImageKHR(self.swapchain, 1_000_000_000, frame.swapchain_sema, .null_handle);
-            if (result.result == .suboptimal_khr) {
-                self.swapchain_suboptimal = true;
-            } else if (result.result == .timeout) {
-                return error.SwapchainTimeout;
-            } else if (result.result == .not_ready) {
-                return error.SwapchainNotReady;
-            }
-
-            return &self.swapchain_images[result.image_index];
-        }
-    }
-
     fn createSyncStructs(self: *Self) !void {
         for (&self.frame_data) |*frame| {
             // FIXME: leak on err
@@ -393,140 +365,6 @@ pub const Graphics = struct {
                 .level = .primary,
             }, @ptrCast(&frame.main_cbuf));
         }
-    }
-
-    fn createSwapchain(self: *Self, old_swapchain: vk.SwapchainKHR) !void {
-        const surface_formats = try self.instance.getPhysicalDeviceSurfaceFormatsAllocKHR(self.gpu.gpu, self.surface, self.allocator);
-        const surface_format = try preferred_format(surface_formats);
-
-        const present_modes = try self.instance.getPhysicalDeviceSurfacePresentModesAllocKHR(self.gpu.gpu, self.surface, self.allocator);
-        const present_mode = try preferred_present_mode(present_modes);
-
-        var w: i32 = undefined;
-        var h: i32 = undefined;
-        glfw.getFramebufferSize(self.window, &w, &h);
-        if (w <= 0 or h <= 0) {
-            return error.InvalidWindowSize;
-        }
-
-        const caps = try self.instance.getPhysicalDeviceSurfaceCapabilitiesKHR(self.gpu.gpu, self.surface);
-
-        const extent = vk.Extent2D{
-            .width = @max(@min(@as(u32, @intCast(w)), caps.max_image_extent.width), caps.min_image_extent.width),
-            .height = @max(@min(@as(u32, @intCast(h)), caps.max_image_extent.height), caps.min_image_extent.height),
-        };
-
-        var create_info = vk.SwapchainCreateInfoKHR{
-            .surface = self.surface,
-            .image_sharing_mode = undefined,
-            .image_format = surface_format.format,
-            .image_color_space = surface_format.color_space,
-            .present_mode = present_mode,
-            .image_extent = extent,
-            .min_image_count = 0,
-            .image_array_layers = 1,
-            .image_usage = .{
-                // .color_attachment_bit = true, // render to a custom image and copy it over
-                .transfer_dst_bit = true,
-            },
-            .pre_transform = .{ .identity_bit_khr = true },
-            .composite_alpha = .{ .opaque_bit_khr = true },
-            .clipped = vk.TRUE,
-            .old_swapchain = old_swapchain,
-        };
-
-        create_info.min_image_count = caps.min_image_count + 1;
-        if (caps.max_image_count != 0 and create_info.min_image_count > caps.max_image_count) {
-            // max image count 0 means there is no max
-            create_info.min_image_count = caps.max_image_count;
-        }
-
-        const queue_family_indices = .{ self.gpu.graphics_family, self.gpu.present_family };
-        if (self.gpu.graphics_family == self.gpu.present_family) {
-            create_info.image_sharing_mode = .exclusive;
-            create_info.queue_family_index_count = 0;
-            create_info.p_queue_family_indices = null;
-        } else {
-            create_info.image_sharing_mode = .concurrent;
-            create_info.queue_family_index_count = 2;
-            create_info.p_queue_family_indices = @ptrCast(&queue_family_indices);
-        }
-
-        self.swapchain = try self.device.createSwapchainKHR(&create_info, null);
-        errdefer self.device.destroySwapchainKHR(self.swapchain, null);
-        self.swapchain_format = create_info.image_format;
-        self.swapchain_extent = create_info.image_extent;
-        self.swapchain_suboptimal = false;
-
-        const images = try self.device.getSwapchainImagesAllocKHR(self.swapchain, self.allocator);
-        defer self.allocator.free(images);
-
-        self.swapchain_images = try self.allocator.alloc(SwapchainImage, images.len);
-        errdefer self.allocator.free(self.swapchain_images);
-
-        for (images, self.swapchain_images, 0..) |image, *saved_image, i| {
-            saved_image.image = image;
-            saved_image.index = @truncate(i);
-
-            const image_view = self.device.createImageView(&vk.ImageViewCreateInfo{
-                .image = image,
-                .view_type = .@"2d",
-                .format = create_info.image_format,
-                .components = .{
-                    .r = .identity,
-                    .g = .identity,
-                    .b = .identity,
-                    .a = .identity,
-                },
-                .subresource_range = .{
-                    .aspect_mask = .{ .color_bit = true },
-                    .base_mip_level = 0,
-                    .level_count = 1,
-                    .base_array_layer = 0,
-                    .layer_count = 1,
-                },
-            }, null);
-
-            saved_image.view = image_view catch |err| {
-                for (self.swapchain_images, 0..i) |*deleting_view, _| {
-                    self.device.destroyImageView(deleting_view.view, null);
-                }
-                return err;
-            };
-        }
-    }
-
-    fn preferred_format(avail: []vk.SurfaceFormatKHR) !vk.SurfaceFormatKHR {
-        if (avail.len == 0) {
-            return error.NoSurfaceFormats;
-        }
-
-        // use B8G8R8A8_UNORM SRGB_NONLINEAR if its there
-        for (avail) |avl| {
-            if (avl.format == .b8g8r8a8_unorm and avl.color_space == .srgb_nonlinear_khr) {
-                return avl;
-            }
-        }
-
-        return avail[0];
-    }
-
-    fn preferred_present_mode(avail: []vk.PresentModeKHR) !vk.PresentModeKHR {
-        // use MAILBOX if its there
-        for (avail) |avl| {
-            if (avl == .mailbox_khr) {
-                return avl;
-            }
-        }
-
-        // // fallback to IMMEDIATE
-        // for (avail) |avl| {
-        //     if (avl == .immediate_khr) {
-        //         return avl;
-        //     }
-        // }
-
-        return vk.PresentModeKHR.fifo_khr;
     }
 
     fn createVma(self: *Self) !void {
