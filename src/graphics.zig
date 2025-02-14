@@ -1,6 +1,6 @@
-pub const std = @import("std");
-pub const vk = @import("vk");
-pub const glfw = @import("glfw");
+const std = @import("std");
+const vk = @import("vk");
+const glfw = @import("glfw");
 
 //
 
@@ -10,6 +10,8 @@ const Frame = @import("graphics/frame.zig").Frame;
 const Queues = @import("graphics/queues.zig").Queues;
 const QueueFamilies = @import("graphics/queues.zig").QueueFamilies;
 const Dispatch = @import("graphics/dispatch.zig").Dispatch;
+const DeletionQueue = @import("graphics/deletion_queue.zig").DeletionQueue;
+const Image = @import("graphics/image.zig").Image;
 const Counter = @import("counter.zig").Counter;
 
 //
@@ -58,12 +60,16 @@ pub const Graphics = struct {
     swapchain: Swapchain,
     frame: Frame,
 
+    draw_image: Image,
+
     fps_counter: Counter = .{},
     start_time_ms: ?i64 = null,
 
     const Self = @This();
 
     pub fn init(allocator: Allocator, window: *glfw.Window) !Self {
+        const extent = try windowSize(window);
+
         const dispatch = try allocator.create(Dispatch);
         errdefer allocator.destroy(dispatch);
         dispatch.* = .{};
@@ -110,7 +116,7 @@ pub const Graphics = struct {
             &gpu,
             device,
             surface,
-            window,
+            extent,
         );
         errdefer swapchain.deinit(allocator, device);
 
@@ -120,6 +126,21 @@ pub const Graphics = struct {
             gpu.queue_families.graphics,
         );
         errdefer frame.deinit(device);
+
+        log.debug("creating draw image ..", .{});
+        const draw_image = try Image.createImage(device, vma, .{
+            // more accurate render target
+            .format = .r16g16b16a16_sfloat,
+            .extent = extendExtent(extent, 1),
+            .usage = .{
+                .transfer_src_bit = true,
+                .transfer_dst_bit = true,
+                .storage_bit = true,
+                .color_attachment_bit = true,
+            },
+            .aspect_flags = .{ .color_bit = true },
+        });
+        errdefer draw_image.deinit(device, vma);
 
         log.info("renderer initialization done", .{});
         return Self{
@@ -140,12 +161,15 @@ pub const Graphics = struct {
             .vma = vma,
             .swapchain = swapchain,
             .frame = frame,
+
+            .draw_image = draw_image,
         };
     }
 
     pub fn deinit(self: *Self) void {
         _ = self.device.deviceWaitIdle() catch {};
 
+        self.draw_image.deinit(self.device, self.vma);
         self.frame.deinit(self.device);
         self.swapchain.deinit(self.allocator, self.device);
         self.vma.deinit();
@@ -406,7 +430,7 @@ pub const Graphics = struct {
 
         try frame.wait(self.device);
 
-        const image = try self.swapchain.acquireImage(self.device, frame.swapchain_sema);
+        const swapchain_image = try self.swapchain.acquireImage(self.device, frame.swapchain_sema);
         // log.info("draw frame={} image={}", .{ frame.index, image.index });
 
         try self.device.resetCommandBuffer(frame.main_cbuf, .{});
@@ -414,33 +438,21 @@ pub const Graphics = struct {
             .flags = .{ .one_time_submit_bit = true },
         });
 
-        self.transitionImage(frame.main_cbuf, image.image, .undefined, .general);
+        const draw_extent = shrinkExtent(self.draw_image.extent);
 
-        const now_ms: i64 = std.time.milliTimestamp();
-        const start_time_ms: i64 = self.start_time_ms orelse blk: {
-            self.start_time_ms = now_ms;
-            break :blk now_ms;
-        };
-        const time_ms = now_ms - start_time_ms;
-        const time_sec = @as(f64, @floatFromInt(time_ms)) / 1000.0;
+        // make the main render target usable for rendering
+        transitionImage(self.device, frame.main_cbuf, self.draw_image.image, .undefined, .general);
 
-        if (self.fps_counter.next(null)) |count| {
-            log.info("fps {}", .{count});
-        }
+        // render everything
+        self.draw_scene(frame.main_cbuf);
 
-        const clear_ranges = subresource_range(.{ .color_bit = true });
-        self.device.cmdClearColorImage(
-            frame.main_cbuf,
-            image.image,
-            .general,
-            &vk.ClearColorValue{
-                .float_32 = .{ @as(f32, @floatCast(std.math.sin(time_sec))) * 0.5 + 0.5, 0.0, 0.0, 1.0 },
-            },
-            1,
-            @ptrCast(&clear_ranges),
-        );
+        // blit the render target image to swapchain
+        transitionImage(self.device, frame.main_cbuf, self.draw_image.image, .general, .transfer_src_optimal);
+        transitionImage(self.device, frame.main_cbuf, swapchain_image.image, .undefined, .transfer_dst_optimal);
+        blitImage(self.device, frame.main_cbuf, self.draw_image.image, draw_extent, swapchain_image.image, self.swapchain.extent);
 
-        self.transitionImage(frame.main_cbuf, image.image, .general, .present_src_khr);
+        // make the swapchain image usable for presenting
+        transitionImage(self.device, frame.main_cbuf, swapchain_image.image, .general, .present_src_khr);
 
         try self.device.endCommandBuffer(frame.main_cbuf);
 
@@ -479,11 +491,37 @@ pub const Graphics = struct {
             .swapchain_count = 1,
             .wait_semaphore_count = 1,
             .p_wait_semaphores = @ptrCast(&frame.render_sema),
-            .p_image_indices = @ptrCast(&image.index),
+            .p_image_indices = @ptrCast(&swapchain_image.index),
         });
     }
 
-    fn transitionImage(self: *Self, cbuf: vk.CommandBuffer, image: vk.Image, from: vk.ImageLayout, to: vk.ImageLayout) void {
+    fn draw_scene(self: *Self, cbuf: vk.CommandBuffer) void {
+        if (self.fps_counter.next(null)) |count| {
+            log.info("fps {}", .{count});
+        }
+
+        const now_ms: i64 = std.time.milliTimestamp();
+        const start_time_ms: i64 = self.start_time_ms orelse blk: {
+            self.start_time_ms = now_ms;
+            break :blk now_ms;
+        };
+        const time_ms = now_ms - start_time_ms;
+        const time_sec = @as(f64, @floatFromInt(time_ms)) / 1000.0;
+
+        const clear_ranges = subresource_range(.{ .color_bit = true });
+        self.device.cmdClearColorImage(
+            cbuf,
+            self.draw_image.image,
+            .general,
+            &vk.ClearColorValue{
+                .float_32 = .{ @as(f32, @floatCast(std.math.sin(time_sec))) * 0.5 + 0.5, 0.0, 0.0, 1.0 },
+            },
+            1,
+            @ptrCast(&clear_ranges),
+        );
+    }
+
+    fn transitionImage(device: Device, cbuf: vk.CommandBuffer, image: vk.Image, from: vk.ImageLayout, to: vk.ImageLayout) void {
         const image_barrier = vk.ImageMemoryBarrier2{
             // the swapchain image is a copy destination
             .src_stage_mask = .{ .all_commands_bit = true },
@@ -505,10 +543,70 @@ pub const Graphics = struct {
             .image = image,
         };
 
-        self.device.cmdPipelineBarrier2(cbuf, &vk.DependencyInfo{
+        device.cmdPipelineBarrier2(cbuf, &vk.DependencyInfo{
             .image_memory_barrier_count = 1,
             .p_image_memory_barriers = @ptrCast(&image_barrier),
         });
+    }
+
+    fn blitImage(
+        device: Device,
+        cbuf: vk.CommandBuffer,
+        src: vk.Image,
+        src_size: vk.Extent2D,
+        dst: vk.Image,
+        dst_size: vk.Extent2D,
+    ) void {
+        const blit_region = vk.ImageBlit2{
+            .src_offsets = [_]vk.Offset3D{
+                vk.Offset3D{
+                    .x = 0,
+                    .y = 0,
+                    .z = 0,
+                },
+                vk.Offset3D{
+                    .x = @intCast(src_size.width),
+                    .y = @intCast(src_size.height),
+                    .z = @intCast(1),
+                },
+            },
+            .src_subresource = .{
+                .aspect_mask = .{ .color_bit = true },
+                .base_array_layer = 0,
+                .layer_count = 1,
+                .mip_level = 0,
+            },
+            .dst_offsets = [_]vk.Offset3D{
+                vk.Offset3D{
+                    .x = 0,
+                    .y = 0,
+                    .z = 0,
+                },
+                vk.Offset3D{
+                    .x = @intCast(dst_size.width),
+                    .y = @intCast(dst_size.height),
+                    .z = @intCast(1),
+                },
+            },
+            .dst_subresource = .{
+                .aspect_mask = .{ .color_bit = true },
+                .base_array_layer = 0,
+                .layer_count = 1,
+                .mip_level = 0,
+            },
+        };
+
+        const blit_info = vk.BlitImageInfo2{
+            .src_image = src,
+            .src_image_layout = .transfer_src_optimal,
+            .dst_image = dst,
+            .dst_image_layout = .transfer_dst_optimal,
+            .filter = .linear,
+            .region_count = 1,
+            .p_regions = @ptrCast(&blit_region),
+        };
+
+        device.cmdBlitImage2(cbuf, &blit_info);
     }
 
     fn subresource_range(aspect: vk.ImageAspectFlags) vk.ImageSubresourceRange {
@@ -529,3 +627,32 @@ pub const Gpu = struct {
     score: usize,
     queue_families: QueueFamilies,
 };
+
+pub fn windowSize(window: *glfw.Window) !vk.Extent2D {
+    var w: i32 = undefined;
+    var h: i32 = undefined;
+    glfw.getFramebufferSize(window, &w, &h);
+    if (w <= 0 or h <= 0) {
+        return error.InvalidWindowSize;
+    }
+
+    return vk.Extent2D{
+        .width = @as(u32, @intCast(w)),
+        .height = @as(u32, @intCast(h)),
+    };
+}
+
+pub fn extendExtent(ext: vk.Extent2D, depth: u32) vk.Extent3D {
+    return vk.Extent3D{
+        .width = ext.width,
+        .height = ext.height,
+        .depth = depth,
+    };
+}
+
+pub fn shrinkExtent(ext: vk.Extent3D) vk.Extent2D {
+    return vk.Extent2D{
+        .width = ext.width,
+        .height = ext.height,
+    };
+}

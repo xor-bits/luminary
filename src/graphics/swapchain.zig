@@ -30,9 +30,9 @@ pub const Swapchain = struct {
         gpu: *const Gpu,
         device: Device,
         surface: vk.SurfaceKHR,
-        window: *glfw.Window,
+        extent: vk.Extent2D,
     ) !Self {
-        return try create(allocator, instance, gpu, device, surface, window, .null_handle);
+        return try create(allocator, instance, gpu, device, surface, extent, .null_handle);
     }
 
     pub fn deinit(
@@ -76,7 +76,7 @@ pub const Swapchain = struct {
         gpu: *const Gpu,
         device: Device,
         surface: vk.SurfaceKHR,
-        window: *glfw.Window,
+        extent: vk.Extent2D,
         old_swapchain: vk.SwapchainKHR,
     ) !Self {
         const surface_formats = try instance.getPhysicalDeviceSurfaceFormatsAllocKHR(gpu.device, surface, allocator);
@@ -85,19 +85,7 @@ pub const Swapchain = struct {
         const present_modes = try instance.getPhysicalDeviceSurfacePresentModesAllocKHR(gpu.device, surface, allocator);
         const present_mode = try preferred_present_mode(present_modes);
 
-        var w: i32 = undefined;
-        var h: i32 = undefined;
-        glfw.getFramebufferSize(window, &w, &h);
-        if (w <= 0 or h <= 0) {
-            return error.InvalidWindowSize;
-        }
-
         const caps = try instance.getPhysicalDeviceSurfaceCapabilitiesKHR(gpu.device, surface);
-
-        const extent = vk.Extent2D{
-            .width = @max(@min(@as(u32, @intCast(w)), caps.max_image_extent.width), caps.min_image_extent.width),
-            .height = @max(@min(@as(u32, @intCast(h)), caps.max_image_extent.height), caps.min_image_extent.height),
-        };
 
         var create_info = vk.SwapchainCreateInfoKHR{
             .surface = surface,
@@ -105,7 +93,10 @@ pub const Swapchain = struct {
             .image_format = surface_format.format,
             .image_color_space = surface_format.color_space,
             .present_mode = present_mode,
-            .image_extent = extent,
+            .image_extent = vk.Extent2D{
+                .width = @max(@min(extent.width, caps.max_image_extent.width), caps.min_image_extent.width),
+                .height = @max(@min(extent.height, caps.max_image_extent.height), caps.min_image_extent.height),
+            },
             .min_image_count = 0,
             .image_array_layers = 1,
             .image_usage = .{

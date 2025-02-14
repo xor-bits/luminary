@@ -70,7 +70,7 @@ pub const Frame = struct {
         };
     }
 
-    pub fn deinit(self: *Self, device: Device) void {
+    pub fn deinit(self: *const Self, device: Device) void {
         for (&self.frames) |*frame| {
             device.destroySemaphore(frame.render_sema, null);
             device.destroySemaphore(frame.swapchain_sema, null);
