@@ -11,6 +11,10 @@ const log = std.log.scoped(.main);
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const allocator = gpa.allocator();
 
+pub const std_options = std.Options{
+    .log_level = .debug,
+};
+
 //
 
 pub fn main() !void {

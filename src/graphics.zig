@@ -49,7 +49,7 @@ pub const Graphics = struct {
     instance: Instance,
     debug_messenger: vk.DebugUtilsMessengerEXT,
     surface: vk.SurfaceKHR,
-    gpu: GpuCandidate,
+    gpu: Gpu,
 
     device: Device,
     queues: Queues,
@@ -58,72 +58,89 @@ pub const Graphics = struct {
     swapchain: Swapchain,
     frame: Frame,
 
-    fps_counter: Counter,
-
-    start_time_ms: ?i64,
+    fps_counter: Counter = .{},
+    start_time_ms: ?i64 = null,
 
     const Self = @This();
 
     pub fn init(allocator: Allocator, window: *glfw.Window) !Self {
-        var self: Self = undefined;
-
-        self.allocator = allocator;
-        self.window = window;
-
-        self.dispatch = try allocator.create(Dispatch);
-        errdefer allocator.destroy(self.dispatch);
-        self.dispatch.* = .{};
+        const dispatch = try allocator.create(Dispatch);
+        errdefer allocator.destroy(dispatch);
+        dispatch.* = .{};
 
         log.debug("loading vulkan ..", .{});
-        try self.dispatch.loadBase();
+        try dispatch.loadBase();
 
         log.debug("creating instance ..", .{});
-        try self.createInstance();
-        errdefer self.deinitInstance();
+        const instance = try createInstance(allocator, dispatch);
+        errdefer deinitInstance(instance);
 
         log.debug("creating debug messenger ..", .{});
-        try self.createDebugMessenger();
-        errdefer self.deinitDebugMessenger();
+        const debug_messenger = try createDebugMessenger(instance);
+        errdefer deinitDebugMessenger(instance, debug_messenger);
 
         log.debug("creating surface ..", .{});
-        try self.createSurface();
-        errdefer self.deinitSurface();
+        const surface = try createSurface(instance, window);
+        errdefer deinitSurface(instance, surface);
 
         log.debug("picking GPU ..", .{});
-        try self.pickGpu();
-        log.info("picked GPU: {s}", .{std.mem.sliceTo(&self.gpu.props.device_name, 0)});
+        const gpu = try pickGpu(allocator, instance, surface);
 
         log.debug("creating device ..", .{});
-        try self.createDevice();
-        errdefer self.deinitDevice();
+        const device = try createDevice(dispatch, instance, &gpu);
+        errdefer deinitDevice(device);
+
+        log.debug("fetching queues ..", .{});
+        const queues = Queues.init(device, gpu.queue_families);
 
         log.debug("creating vma ..", .{});
-        self.vma = try Vma.init(&self.dispatch.base, &self.dispatch.instance, self.instance, self.gpu.gpu, self.device);
-        errdefer self.vma.deinit();
+        const vma = try Vma.init(
+            &dispatch.base,
+            &dispatch.instance,
+            instance,
+            &gpu,
+            device,
+        );
+        errdefer vma.deinit();
 
         log.debug("creating swapchain ..", .{});
-        self.swapchain = try Swapchain.init(
-            self.allocator,
-            self.instance,
-            self.gpu.gpu,
-            self.gpu.queue_families.graphics,
-            self.gpu.queue_families.present,
-            self.device,
-            self.surface,
+        const swapchain = try Swapchain.init(
+            allocator,
+            instance,
+            &gpu,
+            device,
+            surface,
             window,
         );
-        errdefer self.swapchain.deinit(allocator, self.device);
+        errdefer swapchain.deinit(allocator, device);
 
         log.debug("creating frames in flight ..", .{});
-        self.frame = try Frame.init(self.device, self.gpu.queue_families.graphics);
-        errdefer self.frame.deinit(self.device);
-
-        self.fps_counter = .{};
-        self.start_time_ms = null;
+        const frame = try Frame.init(
+            device,
+            gpu.queue_families.graphics,
+        );
+        errdefer frame.deinit(device);
 
         log.info("renderer initialization done", .{});
+        return Self{
+            .allocator = allocator,
 
-        return self;
+            .window = window,
+
+            .dispatch = dispatch,
+
+            .instance = instance,
+            .debug_messenger = debug_messenger,
+            .surface = surface,
+            .gpu = gpu,
+
+            .device = device,
+            .queues = queues,
+
+            .vma = vma,
+            .swapchain = swapchain,
+            .frame = frame,
+        };
     }
 
     pub fn deinit(self: *Self) void {
@@ -132,28 +149,257 @@ pub const Graphics = struct {
         self.frame.deinit(self.device);
         self.swapchain.deinit(self.allocator, self.device);
         self.vma.deinit();
-        self.deinitDevice();
-        self.deinitSurface();
-        self.deinitDebugMessenger();
-        self.deinitInstance();
+        deinitDevice(self.device);
+        deinitSurface(self.instance, self.surface);
+        deinitDebugMessenger(self.instance, self.debug_messenger);
+        deinitInstance(self.instance);
         self.allocator.destroy(self.dispatch);
     }
 
-    fn deinitDevice(self: *Self) void {
-        self.device.destroyDevice(null);
+    // instance
+
+    fn createInstance(allocator: std.mem.Allocator, dispatch: *Dispatch) !Instance {
+        const version = try dispatch.base.enumerateInstanceVersion();
+        log.info("Instance API version: {}.{}.{}", .{
+            vk.apiVersionMajor(version),
+            vk.apiVersionMinor(version),
+            vk.apiVersionPatch(version),
+        });
+
+        var glfw_exts_count: u32 = 0;
+        const glfw_exts = glfw.getRequiredInstanceExtensions(&glfw_exts_count) orelse &[0][*]const u8{};
+
+        const layers = try dispatch.base.enumerateInstanceLayerPropertiesAlloc(allocator);
+        defer allocator.free(layers);
+
+        const vk_layer_khronos_validation = "VK_LAYER_KHRONOS_validation";
+        var vk_layer_khronos_validation_found = false;
+        for (layers) |layer| {
+            const name = std.mem.sliceTo(&layer.layer_name, 0);
+            log.debug("layer: {s}", .{name});
+
+            if (std.mem.eql(u8, name, vk_layer_khronos_validation)) {
+                vk_layer_khronos_validation_found = true;
+                break;
+            }
+        }
+
+        var extensions = std.ArrayList([*]const u8).init(allocator);
+        defer extensions.deinit();
+        try extensions.appendSlice(glfw_exts[0..glfw_exts_count]);
+        try extensions.append(vk.extensions.ext_debug_utils.name.ptr);
+
+        const instance = try dispatch.base.createInstance(&vk.InstanceCreateInfo{
+            .p_application_info = &vk.ApplicationInfo{
+                .p_application_name = "luminary",
+                .application_version = vk.makeApiVersion(0, 0, 0, 0),
+                .p_engine_name = "luminary",
+                .engine_version = vk.makeApiVersion(0, 0, 0, 0),
+                .api_version = api_version,
+            },
+            .enabled_extension_count = @truncate(extensions.items.len),
+            .pp_enabled_extension_names = @ptrCast(extensions.items.ptr),
+            .enabled_layer_count = @intFromBool(vk_layer_khronos_validation_found),
+            .pp_enabled_layer_names = &.{vk_layer_khronos_validation},
+        }, null);
+
+        try dispatch.loadInstance(instance);
+
+        return Instance.init(instance, &dispatch.instance);
     }
 
-    fn deinitSurface(self: *Self) void {
-        self.instance.destroySurfaceKHR(self.surface, null);
+    fn deinitInstance(instance: Instance) void {
+        instance.destroyInstance(null);
     }
 
-    fn deinitDebugMessenger(self: *Self) void {
-        self.instance.destroyDebugUtilsMessengerEXT(self.debug_messenger, null);
+    // debug utils
+
+    fn createDebugMessenger(instance: Instance) !vk.DebugUtilsMessengerEXT {
+        return try instance.createDebugUtilsMessengerEXT(&vk.DebugUtilsMessengerCreateInfoEXT{
+            .message_severity = .{
+                .error_bit_ext = true,
+                .warning_bit_ext = true,
+            },
+            .message_type = .{
+                .general_bit_ext = true,
+                .validation_bit_ext = true,
+                .performance_bit_ext = true,
+                .device_address_binding_bit_ext = true,
+            },
+            .pfn_user_callback = debugCallback,
+        }, null);
     }
 
-    fn deinitInstance(self: *Self) void {
-        self.instance.destroyInstance(null);
+    fn deinitDebugMessenger(instance: Instance, debug_messenger: vk.DebugUtilsMessengerEXT) void {
+        instance.destroyDebugUtilsMessengerEXT(debug_messenger, null);
     }
+
+    fn debugCallback(severity: vk.DebugUtilsMessageSeverityFlagsEXT, types: vk.DebugUtilsMessageTypeFlagsEXT, data: ?*const vk.DebugUtilsMessengerCallbackDataEXT, user_data: ?*anyopaque) callconv(vk.vulkan_call_conv) vk.Bool32 {
+        _ = types;
+        _ = user_data;
+        const msg = b: {
+            break :b (data orelse break :b "<no data>").p_message orelse "<no message>";
+        };
+
+        const l = std.log.scoped(.validation);
+        if (severity.error_bit_ext) {
+            l.err("{s}", .{msg});
+        } else {
+            l.warn("{s}", .{msg});
+        }
+
+        return vk.FALSE;
+    }
+
+    // surface
+
+    fn createSurface(instance: Instance, window: *glfw.Window) !vk.SurfaceKHR {
+        var surface: vk.SurfaceKHR = undefined;
+        if (.success != glfw.createWindowSurface(@intFromEnum(instance.handle), window, null, @ptrCast(&surface))) {
+            return error.SurfaceInitFailed;
+        }
+        return surface;
+    }
+
+    fn deinitSurface(instance: Instance, surface: vk.SurfaceKHR) void {
+        instance.destroySurfaceKHR(surface, null);
+    }
+
+    // physical device
+
+    fn pickGpu(
+        allocator: Allocator,
+        instance: Instance,
+        surface: vk.SurfaceKHR,
+    ) !Gpu {
+        const gpus = try instance.enumeratePhysicalDevicesAlloc(allocator);
+        defer allocator.free(gpus);
+
+        // TODO: maybe pick the gpu based on the largest dedicated memory
+        var best_gpu: ?Gpu = null;
+
+        for (gpus) |gpu| {
+            const props = instance.getPhysicalDeviceProperties(gpu);
+            const is_suitable = try isSuitable(allocator, instance, surface, gpu, props);
+            log.debug("gpu ({s}): {s}", .{ if (is_suitable != null) "suitable" else "not suitable", std.mem.sliceTo(&props.device_name, 0) });
+
+            const new_gpu = is_suitable orelse continue;
+
+            if (best_gpu) |*current| {
+                if (current.score < new_gpu.score) {
+                    best_gpu = new_gpu;
+                }
+            } else {
+                best_gpu = new_gpu;
+            }
+        }
+
+        var gpu = best_gpu orelse return error.NoSuitableGpus;
+        gpu.mem_props = instance.getPhysicalDeviceMemoryProperties(gpu.device);
+
+        log.info("picked GPU: {s}", .{
+            std.mem.sliceTo(&gpu.props.device_name, 0),
+        });
+        log.info(" - API version: {}.{}.{}", .{
+            vk.apiVersionMajor(gpu.props.api_version),
+            vk.apiVersionMinor(gpu.props.api_version),
+            vk.apiVersionPatch(gpu.props.api_version),
+        });
+        log.info(" - Driver version: {}.{}.{}", .{
+            vk.apiVersionMajor(gpu.props.driver_version),
+            vk.apiVersionMinor(gpu.props.driver_version),
+            vk.apiVersionPatch(gpu.props.driver_version),
+        });
+
+        return gpu;
+    }
+
+    fn scoreOf(props: *const vk.PhysicalDeviceProperties) usize {
+        return switch (props.device_type) {
+            .discrete_gpu => 5,
+            .virtual_gpu => 4,
+            .integrated_gpu => 3,
+            .cpu => 2,
+            .other => 1,
+            else => 0,
+        };
+    }
+
+    fn isSuitable(
+        allocator: Allocator,
+        instance: Instance,
+        surface: vk.SurfaceKHR,
+        gpu: vk.PhysicalDevice,
+        props: vk.PhysicalDeviceProperties,
+    ) !?Gpu {
+        const exts = try instance.enumerateDeviceExtensionPropertiesAlloc(gpu, null, allocator);
+        defer allocator.free(exts);
+
+        if (!hasExtensions(&required_device_extensions, exts)) {
+            return null;
+        }
+
+        var format_count: u32 = undefined;
+        var present_mode_count: u32 = undefined;
+
+        _ = try instance.getPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &format_count, null);
+        _ = try instance.getPhysicalDeviceSurfacePresentModesKHR(gpu, surface, &present_mode_count, null);
+
+        if (format_count == 0 or present_mode_count == 0) {
+            return null;
+        }
+
+        return Gpu{
+            .device = gpu,
+            .score = scoreOf(&props),
+            .props = props,
+            .mem_props = undefined,
+            .queue_families = try QueueFamilies.getFromGpu(
+                allocator,
+                instance,
+                surface,
+                gpu,
+            ) orelse return null,
+        };
+    }
+
+    fn hasExtensions(required: []const [*:0]const u8, got: []vk.ExtensionProperties) bool {
+        for (required) |required_ext| {
+            const required_name = std.mem.span(required_ext);
+            for (got) |got_ext| {
+                if (std.mem.eql(u8, required_name, std.mem.sliceTo(&got_ext.extension_name, 0))) {
+                    break;
+                }
+            } else {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // logical device
+
+    fn createDevice(dispatch: *Dispatch, instance: Instance, gpu: *const Gpu) !Device {
+        const queue_create_infos = Queues.createInfos(gpu.queue_families);
+
+        const device = try instance.createDevice(gpu.device, &vk.DeviceCreateInfo{
+            .queue_create_info_count = @truncate(queue_create_infos.len),
+            .p_queue_create_infos = @ptrCast(&queue_create_infos.items),
+            .enabled_extension_count = @truncate(required_device_extensions.len),
+            .pp_enabled_extension_names = &required_device_extensions,
+        }, null);
+
+        try dispatch.loadDevice(device);
+
+        return Device.init(device, &dispatch.device);
+    }
+
+    fn deinitDevice(device: Device) void {
+        device.destroyDevice(null);
+    }
+
+    // other
 
     pub fn draw(self: *Self) !void {
         const frame = self.frame.next();
@@ -274,220 +520,12 @@ pub const Graphics = struct {
             .layer_count = vk.REMAINING_ARRAY_LAYERS,
         };
     }
-
-    fn createInstance(self: *Self) !void {
-        const version = try self.dispatch.base.enumerateInstanceVersion();
-        log.info("Instance API version: {}.{}.{}", .{
-            vk.apiVersionMajor(version),
-            vk.apiVersionMinor(version),
-            vk.apiVersionPatch(version),
-        });
-
-        var glfw_exts_count: u32 = 0;
-        const glfw_exts = glfw.getRequiredInstanceExtensions(&glfw_exts_count) orelse &[0][*]const u8{};
-
-        const layers = try self.dispatch.base.enumerateInstanceLayerPropertiesAlloc(self.allocator);
-        defer self.allocator.free(layers);
-
-        const vk_layer_khronos_validation = "VK_LAYER_KHRONOS_validation";
-        var vk_layer_khronos_validation_found = false;
-        for (layers) |layer| {
-            const name = std.mem.sliceTo(&layer.layer_name, 0);
-            log.debug("layer: {s}", .{name});
-
-            if (std.mem.eql(u8, name, vk_layer_khronos_validation)) {
-                vk_layer_khronos_validation_found = true;
-                break;
-            }
-        }
-
-        var extensions = std.ArrayList([*]const u8).init(self.allocator);
-        defer extensions.deinit();
-        try extensions.appendSlice(glfw_exts[0..glfw_exts_count]);
-        try extensions.append(vk.extensions.ext_debug_utils.name.ptr);
-
-        const instance = try self.dispatch.base.createInstance(&vk.InstanceCreateInfo{
-            .p_application_info = &vk.ApplicationInfo{
-                .p_application_name = "luminary",
-                .application_version = vk.makeApiVersion(0, 0, 0, 0),
-                .p_engine_name = "luminary",
-                .engine_version = vk.makeApiVersion(0, 0, 0, 0),
-                .api_version = api_version,
-            },
-            .enabled_extension_count = @truncate(extensions.items.len),
-            .pp_enabled_extension_names = @ptrCast(extensions.items.ptr),
-            .enabled_layer_count = @intFromBool(vk_layer_khronos_validation_found),
-            .pp_enabled_layer_names = &.{vk_layer_khronos_validation},
-        }, null);
-
-        try self.dispatch.loadInstance(instance);
-
-        self.instance = Instance.init(instance, &self.dispatch.instance);
-        errdefer self.instance.destroyInstance(null);
-    }
-
-    fn createDebugMessenger(self: *Self) !void {
-        self.debug_messenger = try self.instance.createDebugUtilsMessengerEXT(&vk.DebugUtilsMessengerCreateInfoEXT{
-            .message_severity = .{
-                .error_bit_ext = true,
-                .warning_bit_ext = true,
-            },
-            .message_type = .{
-                .general_bit_ext = true,
-                .validation_bit_ext = true,
-                .performance_bit_ext = true,
-                .device_address_binding_bit_ext = true,
-            },
-            .pfn_user_callback = debugCallback,
-        }, null);
-    }
-
-    fn createDevice(self: *Self) !void {
-        const queue_create_infos = Queues.createInfos(self.gpu.queue_families);
-
-        const device = try self.instance.createDevice(self.gpu.gpu, &vk.DeviceCreateInfo{
-            .queue_create_info_count = @truncate(queue_create_infos.len),
-            .p_queue_create_infos = @ptrCast(&queue_create_infos.items),
-            .enabled_extension_count = @truncate(required_device_extensions.len),
-            .pp_enabled_extension_names = &required_device_extensions,
-        }, null);
-
-        try self.dispatch.loadDevice(device);
-
-        self.device = Device.init(device, &self.dispatch.device);
-        errdefer self.device.destroyDevice(null);
-
-        self.queues = Queues.init(self.device, self.gpu.queue_families);
-    }
-
-    fn pickGpu(self: *Self) !void {
-        const gpus = try self.instance.enumeratePhysicalDevicesAlloc(self.allocator);
-        defer self.allocator.free(gpus);
-
-        // TODO: maybe pick the gpu based on the largest dedicated memory
-        var best_gpu: ?GpuCandidate = null;
-
-        for (gpus) |gpu| {
-            const props = self.instance.getPhysicalDeviceProperties(gpu);
-            const is_suitable = try self.isSuitable(gpu, props);
-            log.debug("gpu ({s}): {s}", .{ if (is_suitable != null) "suitable" else "not suitable", std.mem.sliceTo(&props.device_name, 0) });
-
-            const new_gpu = is_suitable orelse continue;
-
-            if (best_gpu) |*current| {
-                if (current.score < new_gpu.score) {
-                    best_gpu = new_gpu;
-                }
-            } else {
-                best_gpu = new_gpu;
-            }
-        }
-
-        self.gpu = best_gpu orelse return error.NoSuitableGpus;
-        self.gpu.mem_props = self.instance.getPhysicalDeviceMemoryProperties(self.gpu.gpu);
-
-        log.info("GPU API version: {}.{}.{}", .{
-            vk.apiVersionMajor(self.gpu.props.api_version),
-            vk.apiVersionMinor(self.gpu.props.api_version),
-            vk.apiVersionPatch(self.gpu.props.api_version),
-        });
-        log.info("GPU Driver version: {}.{}.{}", .{
-            vk.apiVersionMajor(self.gpu.props.driver_version),
-            vk.apiVersionMinor(self.gpu.props.driver_version),
-            vk.apiVersionPatch(self.gpu.props.driver_version),
-        });
-    }
-
-    const GpuCandidate = struct {
-        gpu: vk.PhysicalDevice,
-        props: vk.PhysicalDeviceProperties,
-        mem_props: vk.PhysicalDeviceMemoryProperties,
-        score: usize,
-        queue_families: QueueFamilies,
-    };
-
-    fn scoreOf(props: *const vk.PhysicalDeviceProperties) usize {
-        return switch (props.device_type) {
-            .discrete_gpu => 5,
-            .virtual_gpu => 4,
-            .integrated_gpu => 3,
-            .cpu => 2,
-            .other => 1,
-            else => 0,
-        };
-    }
-
-    fn isSuitable(
-        self: *Self,
-        gpu: vk.PhysicalDevice,
-        props: vk.PhysicalDeviceProperties,
-    ) !?GpuCandidate {
-        const exts = try self.instance.enumerateDeviceExtensionPropertiesAlloc(gpu, null, self.allocator);
-        defer self.allocator.free(exts);
-
-        if (!hasExtensions(&required_device_extensions, exts)) {
-            return null;
-        }
-
-        var format_count: u32 = undefined;
-        var present_mode_count: u32 = undefined;
-
-        _ = try self.instance.getPhysicalDeviceSurfaceFormatsKHR(gpu, self.surface, &format_count, null);
-        _ = try self.instance.getPhysicalDeviceSurfacePresentModesKHR(gpu, self.surface, &present_mode_count, null);
-
-        if (format_count == 0 or present_mode_count == 0) {
-            return null;
-        }
-
-        return GpuCandidate{
-            .gpu = gpu,
-            .score = scoreOf(&props),
-            .props = props,
-            .mem_props = undefined,
-            .queue_families = try QueueFamilies.getFromGpu(
-                self.allocator,
-                self.instance,
-                self.surface,
-                gpu,
-            ) orelse return null,
-        };
-    }
-
-    fn hasExtensions(required: []const [*:0]const u8, got: []vk.ExtensionProperties) bool {
-        for (required) |required_ext| {
-            const required_name = std.mem.span(required_ext);
-            for (got) |got_ext| {
-                if (std.mem.eql(u8, required_name, std.mem.sliceTo(&got_ext.extension_name, 0))) {
-                    break;
-                }
-            } else {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    fn createSurface(self: *Self) !void {
-        if (.success != glfw.createWindowSurface(@intFromEnum(self.instance.handle), self.window, null, @ptrCast(&self.surface))) {
-            return error.SurfaceInitFailed;
-        }
-    }
 };
 
-fn debugCallback(severity: vk.DebugUtilsMessageSeverityFlagsEXT, types: vk.DebugUtilsMessageTypeFlagsEXT, data: ?*const vk.DebugUtilsMessengerCallbackDataEXT, user_data: ?*anyopaque) callconv(vk.vulkan_call_conv) vk.Bool32 {
-    _ = types;
-    _ = user_data;
-    const msg = b: {
-        break :b (data orelse break :b "<no data>").p_message orelse "<no message>";
-    };
-
-    const l = std.log.scoped(.validation);
-    if (severity.error_bit_ext) {
-        l.err("{s}", .{msg});
-    } else {
-        l.warn("{s}", .{msg});
-    }
-
-    return vk.FALSE;
-}
+pub const Gpu = struct {
+    device: vk.PhysicalDevice,
+    props: vk.PhysicalDeviceProperties,
+    mem_props: vk.PhysicalDeviceMemoryProperties,
+    score: usize,
+    queue_families: QueueFamilies,
+};

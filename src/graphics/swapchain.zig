@@ -5,6 +5,7 @@ pub const glfw = @import("glfw");
 const graphics = @import("../graphics.zig");
 const Instance = graphics.Instance;
 const Device = graphics.Device;
+const Gpu = graphics.Gpu;
 
 //
 
@@ -26,18 +27,16 @@ pub const Swapchain = struct {
     pub fn init(
         allocator: std.mem.Allocator,
         instance: Instance,
-        gpu: vk.PhysicalDevice,
-        graphics_queue_family: u32,
-        present_queue_family: u32,
+        gpu: *const Gpu,
         device: Device,
         surface: vk.SurfaceKHR,
         window: *glfw.Window,
     ) !Self {
-        return try create(allocator, instance, gpu, graphics_queue_family, present_queue_family, device, surface, window, .null_handle);
+        return try create(allocator, instance, gpu, device, surface, window, .null_handle);
     }
 
     pub fn deinit(
-        self: *Self,
+        self: *const Self,
         allocator: std.mem.Allocator,
         device: Device,
     ) void {
@@ -74,18 +73,16 @@ pub const Swapchain = struct {
     fn create(
         allocator: std.mem.Allocator,
         instance: Instance,
-        gpu: vk.PhysicalDevice,
-        graphics_queue_family: u32,
-        present_queue_family: u32,
+        gpu: *const Gpu,
         device: Device,
         surface: vk.SurfaceKHR,
         window: *glfw.Window,
         old_swapchain: vk.SwapchainKHR,
     ) !Self {
-        const surface_formats = try instance.getPhysicalDeviceSurfaceFormatsAllocKHR(gpu, surface, allocator);
+        const surface_formats = try instance.getPhysicalDeviceSurfaceFormatsAllocKHR(gpu.device, surface, allocator);
         const surface_format = try preferred_format(surface_formats);
 
-        const present_modes = try instance.getPhysicalDeviceSurfacePresentModesAllocKHR(gpu, surface, allocator);
+        const present_modes = try instance.getPhysicalDeviceSurfacePresentModesAllocKHR(gpu.device, surface, allocator);
         const present_mode = try preferred_present_mode(present_modes);
 
         var w: i32 = undefined;
@@ -95,7 +92,7 @@ pub const Swapchain = struct {
             return error.InvalidWindowSize;
         }
 
-        const caps = try instance.getPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface);
+        const caps = try instance.getPhysicalDeviceSurfaceCapabilitiesKHR(gpu.device, surface);
 
         const extent = vk.Extent2D{
             .width = @max(@min(@as(u32, @intCast(w)), caps.max_image_extent.width), caps.min_image_extent.width),
@@ -127,8 +124,8 @@ pub const Swapchain = struct {
             create_info.min_image_count = caps.max_image_count;
         }
 
-        const queue_family_indices = .{ graphics_queue_family, present_queue_family };
-        if (graphics_queue_family == present_queue_family) {
+        const queue_family_indices = .{ gpu.queue_families.graphics, gpu.queue_families.present };
+        if (queue_family_indices[0] == queue_family_indices[1]) {
             create_info.image_sharing_mode = .exclusive;
             create_info.queue_family_index_count = 0;
             create_info.p_queue_family_indices = null;

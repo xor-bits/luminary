@@ -8,6 +8,7 @@ const BaseDispatch = dispatch.BaseDispatch;
 const InstanceDispatch = dispatch.InstanceDispatch;
 const Instance = graphics.Instance;
 const Device = graphics.Device;
+const Gpu = graphics.Gpu;
 
 //
 
@@ -20,7 +21,7 @@ pub const Vma = struct {
         vkb: *BaseDispatch,
         vki: *InstanceDispatch,
         instance: Instance,
-        gpu: vk.PhysicalDevice,
+        gpu: *const Gpu,
         device: Device,
     ) !Self {
         const vk_functions = vma.VmaVulkanFunctions{
@@ -31,7 +32,7 @@ pub const Vma = struct {
         const allocator_create_info = vma.VmaAllocatorCreateInfo{
             .flags = vma.VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT,
             .vulkanApiVersion = vma.VK_API_VERSION_1_2,
-            .physicalDevice = @ptrFromInt(@intFromEnum(gpu)),
+            .physicalDevice = @ptrFromInt(@intFromEnum(gpu.device)),
             .device = @ptrFromInt(@intFromEnum(device.handle)),
             .instance = @ptrFromInt(@intFromEnum(instance.handle)),
             .pVulkanFunctions = &vk_functions,
@@ -49,7 +50,7 @@ pub const Vma = struct {
         };
     }
 
-    pub fn deinit(self: *Self) void {
+    pub fn deinit(self: *const Self) void {
         vma.vmaDestroyAllocator(self.allocator);
     }
 };
