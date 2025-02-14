@@ -7,6 +7,8 @@ pub const glfw = @import("glfw");
 const Swapchain = @import("graphics/swapchain.zig").Swapchain;
 const Vma = @import("graphics/vma.zig").Vma;
 const Frame = @import("graphics/frame.zig").Frame;
+const Queues = @import("graphics/queues.zig").Queues;
+const QueueFamilies = @import("graphics/queues.zig").QueueFamilies;
 const Counter = @import("counter.zig").Counter;
 
 //
@@ -54,11 +56,7 @@ pub const Graphics = struct {
     surface: vk.SurfaceKHR,
     gpu: GpuCandidate,
     device: Device,
-
-    graphics_queue: Queue,
-    present_queue: Queue,
-    transfer_queue: Queue,
-    compute_queue: Queue,
+    queues: Queues,
 
     vma: Vma,
     swapchain: Swapchain,
@@ -112,8 +110,8 @@ pub const Graphics = struct {
             self.allocator,
             self.instance,
             self.gpu.gpu,
-            self.gpu.graphics_family,
-            self.gpu.present_family,
+            self.gpu.queue_families.graphics,
+            self.gpu.queue_families.present,
             self.device,
             self.surface,
             window,
@@ -122,7 +120,7 @@ pub const Graphics = struct {
         log.debug("swapchain created", .{});
 
         log.debug("creating frames in flight ..", .{});
-        self.frame = try Frame.init(self.device, self.gpu.graphics_family);
+        self.frame = try Frame.init(self.device, self.gpu.queue_families.graphics);
         errdefer self.frame.deinit(self.device);
         log.debug("frames in flight created", .{});
 
@@ -189,8 +187,6 @@ pub const Graphics = struct {
             log.info("fps {}", .{count});
         }
 
-        log.info("{d}", .{time_ms});
-
         const clear_ranges = subresource_range(.{ .color_bit = true });
         self.device.cmdClearColorImage(
             frame.main_cbuf,
@@ -235,9 +231,9 @@ pub const Graphics = struct {
             .p_command_buffer_infos = @ptrCast(&cmd_info),
         };
 
-        try self.graphics_queue.submit2(1, @ptrCast(&submit_info), frame.render_fence);
+        try self.queues.graphics.submit2(1, @ptrCast(&submit_info), frame.render_fence);
 
-        _ = try self.present_queue.presentKHR(&vk.PresentInfoKHR{
+        _ = try self.queues.present.presentKHR(&vk.PresentInfoKHR{
             .p_swapchains = @ptrCast(&self.swapchain),
             .swapchain_count = 1,
             .wait_semaphore_count = 1,
@@ -352,63 +348,11 @@ pub const Graphics = struct {
     }
 
     fn createDevice(self: *Self) !void {
-        const priority = [_]f32{1};
-        var queue_create_infos_buf = [_]vk.DeviceQueueCreateInfo{
-            vk.DeviceQueueCreateInfo{
-                .queue_family_index = self.gpu.graphics_family,
-                .queue_count = 1,
-                .p_queue_priorities = &priority,
-            },
-            vk.DeviceQueueCreateInfo{
-                .queue_family_index = self.gpu.present_family,
-                .queue_count = 1,
-                .p_queue_priorities = &priority,
-            },
-            vk.DeviceQueueCreateInfo{
-                .queue_family_index = self.gpu.transfer_family,
-                .queue_count = 1,
-                .p_queue_priorities = &priority,
-            },
-            vk.DeviceQueueCreateInfo{
-                .queue_family_index = self.gpu.compute_family,
-                .queue_count = 1,
-                .p_queue_priorities = &priority,
-            },
-        };
-
-        std.sort.pdq(vk.DeviceQueueCreateInfo, queue_create_infos_buf[0..], {}, struct {
-            fn inner(_: void, a: vk.DeviceQueueCreateInfo, b: vk.DeviceQueueCreateInfo) bool {
-                return a.queue_family_index < b.queue_family_index;
-            }
-        }.inner);
-
-        var queue_create_infos = std.ArrayListAlignedUnmanaged(vk.DeviceQueueCreateInfo, null){
-            .items = queue_create_infos_buf[0..],
-            .capacity = queue_create_infos_buf.len,
-        };
-
-        // remove duplicate queue families
-        var i: usize = queue_create_infos.items.len;
-        if (i > 0) {
-            i -= 1;
-        }
-        while (i > 0) {
-            i -= 1;
-
-            if (queue_create_infos.items[i].queue_family_index == queue_create_infos.items[i + 1].queue_family_index) {
-                _ = queue_create_infos.orderedRemove(i + 1);
-            }
-        }
-
-        const features_13 = vk.PhysicalDeviceVulkan13Features{
-            .synchronization_2 = vk.TRUE,
-            .maintenance_4 = vk.TRUE,
-        };
+        const queue_create_infos = Queues.createInfos(self.gpu.queue_families);
 
         const device = try self.instance.createDevice(self.gpu.gpu, &vk.DeviceCreateInfo{
-            .p_next = &features_13,
-            .queue_create_info_count = @truncate(queue_create_infos.items.len),
-            .p_queue_create_infos = queue_create_infos.items.ptr,
+            .queue_create_info_count = @truncate(queue_create_infos.len),
+            .p_queue_create_infos = @ptrCast(&queue_create_infos.items),
             .enabled_extension_count = @truncate(required_device_extensions.len),
             .pp_enabled_extension_names = &required_device_extensions,
         }, null);
@@ -417,15 +361,7 @@ pub const Graphics = struct {
         self.device = Device.init(device, &self.vkd);
         errdefer self.device.destroyDevice(null);
 
-        const graphics_queue = self.device.getDeviceQueue(self.gpu.graphics_family, 0);
-        const present_queue = self.device.getDeviceQueue(self.gpu.present_family, 0);
-        const transfer_queue = self.device.getDeviceQueue(self.gpu.transfer_family, 0);
-        const compute_queue = self.device.getDeviceQueue(self.gpu.compute_family, 0);
-
-        self.graphics_queue = Queue.init(graphics_queue, &self.vkd);
-        self.present_queue = Queue.init(present_queue, &self.vkd);
-        self.transfer_queue = Queue.init(transfer_queue, &self.vkd);
-        self.compute_queue = Queue.init(compute_queue, &self.vkd);
+        self.queues = Queues.init(self.device, self.gpu.queue_families);
     }
 
     fn pickGpu(self: *Self) !void {
@@ -471,10 +407,7 @@ pub const Graphics = struct {
         props: vk.PhysicalDeviceProperties,
         mem_props: vk.PhysicalDeviceMemoryProperties,
         score: usize,
-        graphics_family: u32,
-        present_family: u32,
-        transfer_family: u32,
-        compute_family: u32,
+        queue_families: QueueFamilies,
     };
 
     fn scoreOf(props: *const vk.PhysicalDeviceProperties) usize {
@@ -510,93 +443,18 @@ pub const Graphics = struct {
             return null;
         }
 
-        const queue_family_props = try self.instance.getPhysicalDeviceQueueFamilyPropertiesAlloc(gpu, self.allocator);
-        defer self.allocator.free(queue_family_props);
-
-        const graphics_family = try self.pickQueueFamily(
-            gpu,
-            queue_family_props,
-            .{ .graphics_bit = true },
-            false,
-        ) orelse return null;
-        const present_family = try self.pickQueueFamily(
-            gpu,
-            queue_family_props,
-            .{},
-            true,
-        ) orelse return null;
-        const transfer_family = try self.pickQueueFamily(
-            gpu,
-            queue_family_props,
-            .{ .transfer_bit = true },
-            false,
-        ) orelse return null;
-        const compute_family = try self.pickQueueFamily(
-            gpu,
-            queue_family_props,
-            .{ .compute_bit = true },
-            false,
-        ) orelse return null;
-
         return GpuCandidate{
             .gpu = gpu,
             .score = scoreOf(&props),
             .props = props,
             .mem_props = undefined,
-            .graphics_family = graphics_family,
-            .present_family = present_family,
-            .transfer_family = transfer_family,
-            .compute_family = compute_family,
+            .queue_families = try QueueFamilies.getFromGpu(
+                self.allocator,
+                self.instance,
+                self.surface,
+                gpu,
+            ) orelse return null,
         };
-    }
-
-    fn pickQueueFamily(
-        self: *Self,
-        gpu: vk.PhysicalDevice,
-        queue_props: []const vk.QueueFamilyProperties,
-        contains: vk.QueueFlags,
-        check_present: bool,
-    ) !?u32 {
-        var queue_index: u32 = 0;
-        var found = false;
-        // find the most specific graphics queue
-        // because the more generic the queue is, the slower it usually is
-        // TODO: maybe try also picking queues so that each task has its own dedicated queue if possible
-        var queue_generality: usize = std.math.maxInt(usize);
-        for (queue_props, 0..) |queue_prop, i| {
-            const index: u32 = @truncate(i);
-            const has_present = try self.instance.getPhysicalDeviceSurfaceSupportKHR(gpu, index, self.surface) == vk.TRUE;
-            const this_queue_generality = @popCount(queue_prop.queue_flags.intersect(.{
-                .graphics_bit = true,
-                .compute_bit = true,
-                .transfer_bit = true,
-            }).toInt()) + @intFromBool(has_present);
-
-            // log.info("queue present={} graphics={} compute={} transfer={}", .{
-            //     has_present,
-            //     queue_prop.queue_flags.graphics_bit,
-            //     queue_prop.queue_flags.compute_bit,
-            //     queue_prop.queue_flags.transfer_bit,
-            // });
-
-            if (queue_prop.queue_flags.contains(contains) and
-                this_queue_generality <= queue_generality)
-            {
-                if (check_present and !has_present) {
-                    continue;
-                }
-
-                queue_index = index;
-                queue_generality = this_queue_generality;
-                found = true;
-            }
-        }
-
-        if (!found) {
-            return null;
-        }
-
-        return queue_index;
     }
 
     fn hasExtensions(required: []const [*:0]const u8, got: []vk.ExtensionProperties) bool {
