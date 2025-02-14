@@ -3,8 +3,9 @@ pub const vma = @import("vma");
 pub const vk = @import("vk");
 
 const graphics = @import("../graphics.zig");
-const BaseDispatch = graphics.BaseDispatch;
-const InstanceDispatch = graphics.InstanceDispatch;
+const dispatch = @import("dispatch.zig");
+const BaseDispatch = dispatch.BaseDispatch;
+const InstanceDispatch = dispatch.InstanceDispatch;
 const Instance = graphics.Instance;
 const Device = graphics.Device;
 

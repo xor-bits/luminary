@@ -9,6 +9,7 @@ const Vma = @import("graphics/vma.zig").Vma;
 const Frame = @import("graphics/frame.zig").Frame;
 const Queues = @import("graphics/queues.zig").Queues;
 const QueueFamilies = @import("graphics/queues.zig").QueueFamilies;
+const Dispatch = @import("graphics/dispatch.zig").Dispatch;
 const Counter = @import("counter.zig").Counter;
 
 //
@@ -17,7 +18,7 @@ const log = std.log.scoped(.graphics);
 
 const required_device_extensions = [_][*:0]const u8{vk.extensions.khr_swapchain.name};
 
-const apis: []const vk.ApiInfo = &[_]vk.ApiInfo{
+pub const apis: []const vk.ApiInfo = &[_]vk.ApiInfo{
     vk.features.version_1_0,
     vk.features.version_1_1,
     vk.features.version_1_2,
@@ -28,10 +29,6 @@ const apis: []const vk.ApiInfo = &[_]vk.ApiInfo{
 };
 
 const api_version = vk.API_VERSION_1_3;
-
-pub const BaseDispatch = vk.BaseWrapper(apis);
-pub const InstanceDispatch = vk.InstanceWrapper(apis);
-pub const DeviceDispatch = vk.DeviceWrapper(apis);
 
 pub const Instance = vk.InstanceProxy(apis);
 pub const Device = vk.DeviceProxy(apis);
@@ -47,14 +44,13 @@ pub const Graphics = struct {
 
     window: *glfw.Window,
 
-    vkb: BaseDispatch,
-    vki: InstanceDispatch,
-    vkd: DeviceDispatch,
+    dispatch: *Dispatch,
 
     instance: Instance,
     debug_messenger: vk.DebugUtilsMessengerEXT,
     surface: vk.SurfaceKHR,
     gpu: GpuCandidate,
+
     device: Device,
     queues: Queues,
 
@@ -68,42 +64,42 @@ pub const Graphics = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: Allocator, window: *glfw.Window) !*Self {
-        const self = try allocator.create(Graphics);
-        errdefer allocator.destroy(self);
+    pub fn init(allocator: Allocator, window: *glfw.Window) !Self {
+        var self: Self = undefined;
 
         self.allocator = allocator;
         self.window = window;
-        self.vkb = try BaseDispatch.load(getInstanceProcAddress);
+
+        self.dispatch = try allocator.create(Dispatch);
+        errdefer allocator.destroy(self.dispatch);
+        self.dispatch.* = .{};
+
+        log.debug("loading vulkan ..", .{});
+        try self.dispatch.loadBase();
 
         log.debug("creating instance ..", .{});
         try self.createInstance();
         errdefer self.deinitInstance();
-        log.debug("instance created", .{});
 
         log.debug("creating debug messenger ..", .{});
         try self.createDebugMessenger();
         errdefer self.deinitDebugMessenger();
-        log.debug("debug messenger created", .{});
 
         log.debug("creating surface ..", .{});
         try self.createSurface();
         errdefer self.deinitSurface();
-        log.debug("surface created", .{});
 
         log.debug("picking GPU ..", .{});
         try self.pickGpu();
-        log.info("GPU picked: {s}", .{std.mem.sliceTo(&self.gpu.props.device_name, 0)});
+        log.info("picked GPU: {s}", .{std.mem.sliceTo(&self.gpu.props.device_name, 0)});
 
         log.debug("creating device ..", .{});
         try self.createDevice();
         errdefer self.deinitDevice();
-        log.debug("device created", .{});
 
         log.debug("creating vma ..", .{});
-        self.vma = try Vma.init(&self.vkb, &self.vki, self.instance, self.gpu.gpu, self.device);
+        self.vma = try Vma.init(&self.dispatch.base, &self.dispatch.instance, self.instance, self.gpu.gpu, self.device);
         errdefer self.vma.deinit();
-        log.debug("vma created", .{});
 
         log.debug("creating swapchain ..", .{});
         self.swapchain = try Swapchain.init(
@@ -117,15 +113,15 @@ pub const Graphics = struct {
             window,
         );
         errdefer self.swapchain.deinit(allocator, self.device);
-        log.debug("swapchain created", .{});
 
         log.debug("creating frames in flight ..", .{});
         self.frame = try Frame.init(self.device, self.gpu.queue_families.graphics);
         errdefer self.frame.deinit(self.device);
-        log.debug("frames in flight created", .{});
 
         self.fps_counter = .{};
         self.start_time_ms = null;
+
+        log.info("renderer initialization done", .{});
 
         return self;
     }
@@ -140,8 +136,7 @@ pub const Graphics = struct {
         self.deinitSurface();
         self.deinitDebugMessenger();
         self.deinitInstance();
-
-        self.allocator.destroy(self);
+        self.allocator.destroy(self.dispatch);
     }
 
     fn deinitDevice(self: *Self) void {
@@ -281,7 +276,7 @@ pub const Graphics = struct {
     }
 
     fn createInstance(self: *Self) !void {
-        const version = try self.vkb.enumerateInstanceVersion();
+        const version = try self.dispatch.base.enumerateInstanceVersion();
         log.info("Instance API version: {}.{}.{}", .{
             vk.apiVersionMajor(version),
             vk.apiVersionMinor(version),
@@ -291,7 +286,7 @@ pub const Graphics = struct {
         var glfw_exts_count: u32 = 0;
         const glfw_exts = glfw.getRequiredInstanceExtensions(&glfw_exts_count) orelse &[0][*]const u8{};
 
-        const layers = try self.vkb.enumerateInstanceLayerPropertiesAlloc(self.allocator);
+        const layers = try self.dispatch.base.enumerateInstanceLayerPropertiesAlloc(self.allocator);
         defer self.allocator.free(layers);
 
         const vk_layer_khronos_validation = "VK_LAYER_KHRONOS_validation";
@@ -311,7 +306,7 @@ pub const Graphics = struct {
         try extensions.appendSlice(glfw_exts[0..glfw_exts_count]);
         try extensions.append(vk.extensions.ext_debug_utils.name.ptr);
 
-        const instance = try self.vkb.createInstance(&vk.InstanceCreateInfo{
+        const instance = try self.dispatch.base.createInstance(&vk.InstanceCreateInfo{
             .p_application_info = &vk.ApplicationInfo{
                 .p_application_name = "luminary",
                 .application_version = vk.makeApiVersion(0, 0, 0, 0),
@@ -325,9 +320,9 @@ pub const Graphics = struct {
             .pp_enabled_layer_names = &.{vk_layer_khronos_validation},
         }, null);
 
-        self.vki = try InstanceDispatch.load(instance, self.vkb.dispatch.vkGetInstanceProcAddr);
+        try self.dispatch.loadInstance(instance);
 
-        self.instance = Instance.init(instance, &self.vki);
+        self.instance = Instance.init(instance, &self.dispatch.instance);
         errdefer self.instance.destroyInstance(null);
     }
 
@@ -357,8 +352,9 @@ pub const Graphics = struct {
             .pp_enabled_extension_names = &required_device_extensions,
         }, null);
 
-        self.vkd = try DeviceDispatch.load(device, self.instance.wrapper.dispatch.vkGetDeviceProcAddr);
-        self.device = Device.init(device, &self.vkd);
+        try self.dispatch.loadDevice(device);
+
+        self.device = Device.init(device, &self.dispatch.device);
         errdefer self.device.destroyDevice(null);
 
         self.queues = Queues.init(self.device, self.gpu.queue_families);
@@ -476,10 +472,6 @@ pub const Graphics = struct {
         if (.success != glfw.createWindowSurface(@intFromEnum(self.instance.handle), self.window, null, @ptrCast(&self.surface))) {
             return error.SurfaceInitFailed;
         }
-    }
-
-    fn getInstanceProcAddress(instance: vk.Instance, procname: [*:0]const u8) ?glfw.VKproc {
-        return glfw.getInstanceProcAddress(@intFromEnum(instance), procname);
     }
 };
 
