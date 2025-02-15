@@ -28,6 +28,7 @@
             renderdoc
 
             vulkan-loader
+            # vulkan-tools-lunarg # vkconfig
           ];
 
           # VK_LAYER_PATH = "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d:${pkgs.vulkan-extension-layer}/share/vulkan/explicit_layer.d";

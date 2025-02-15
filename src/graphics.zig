@@ -20,7 +20,9 @@ const Counter = @import("counter.zig").Counter;
 
 const log = std.log.scoped(.graphics);
 
-const required_device_extensions = [_][*:0]const u8{vk.extensions.khr_swapchain.name};
+const required_device_extensions = [_][*:0]const u8{
+    vk.extensions.khr_swapchain.name,
+};
 
 pub const apis: []const vk.ApiInfo = &[_]vk.ApiInfo{
     vk.features.version_1_0,
@@ -287,17 +289,12 @@ pub const Graphics = struct {
         defer layers.deinit();
 
         const layer_validation = "VK_LAYER_KHRONOS_validation";
-        const layer_renderdoc = "VK_LAYER_RENDERDOC_Capture";
-
         for (avail_layers) |layer| {
             const name = std.mem.sliceTo(&layer.layer_name, 0);
             log.debug("layer: {s}", .{name});
 
             if (std.mem.eql(u8, name, layer_validation)) {
                 try layers.append(layer_validation);
-            }
-            if (std.mem.eql(u8, name, layer_renderdoc)) {
-                // try layers.append(layer_renderdoc);
             }
         }
 
@@ -360,7 +357,12 @@ pub const Graphics = struct {
         instance.destroyDebugUtilsMessengerEXT(debug_messenger, null);
     }
 
-    fn debugCallback(severity: vk.DebugUtilsMessageSeverityFlagsEXT, types: vk.DebugUtilsMessageTypeFlagsEXT, data: ?*const vk.DebugUtilsMessengerCallbackDataEXT, user_data: ?*anyopaque) callconv(vk.vulkan_call_conv) vk.Bool32 {
+    fn debugCallback(
+        severity: vk.DebugUtilsMessageSeverityFlagsEXT,
+        types: vk.DebugUtilsMessageTypeFlagsEXT,
+        data: ?*const vk.DebugUtilsMessengerCallbackDataEXT,
+        user_data: ?*anyopaque,
+    ) callconv(vk.vulkan_call_conv) vk.Bool32 {
         _ = types;
         _ = user_data;
         const msg = b: {
@@ -370,6 +372,9 @@ pub const Graphics = struct {
         const l = std.log.scoped(.validation);
         if (severity.error_bit_ext) {
             l.err("{s}", .{msg});
+            if (@import("builtin").mode == .Debug) {
+                std.debug.panic("validation error", .{});
+            }
         } else {
             l.warn("{s}", .{msg});
         }
@@ -509,11 +514,24 @@ pub const Graphics = struct {
     fn createDevice(dispatch: *Dispatch, instance: Instance, gpu: *const Gpu) !Device {
         const queue_create_infos = Queues.createInfos(gpu.queue_families);
 
+        var features13 = vk.PhysicalDeviceVulkan13Features{
+            .dynamic_rendering = vk.TRUE,
+            .synchronization_2 = vk.TRUE,
+        };
+
+        var features12 = vk.PhysicalDeviceVulkan12Features{
+            .buffer_device_address = vk.TRUE,
+            .buffer_device_address_capture_replay = vk.TRUE,
+            .descriptor_indexing = vk.TRUE,
+            .p_next = &features13,
+        };
+
         const device = try instance.createDevice(gpu.device, &vk.DeviceCreateInfo{
             .queue_create_info_count = @truncate(queue_create_infos.len),
             .p_queue_create_infos = @ptrCast(&queue_create_infos.items),
             .enabled_extension_count = @truncate(required_device_extensions.len),
             .pp_enabled_extension_names = &required_device_extensions,
+            .p_next = &features12,
         }, null);
 
         try dispatch.loadDevice(device);
@@ -554,7 +572,7 @@ pub const Graphics = struct {
         blitImage(self.device, frame.main_cbuf, self.draw_image.image, draw_extent, swapchain_image.image, self.swapchain.extent);
 
         // make the swapchain image usable for presenting
-        transitionImage(self.device, frame.main_cbuf, swapchain_image.image, .general, .present_src_khr);
+        transitionImage(self.device, frame.main_cbuf, swapchain_image.image, .transfer_dst_optimal, .present_src_khr);
 
         try self.device.endCommandBuffer(frame.main_cbuf);
 
@@ -602,24 +620,24 @@ pub const Graphics = struct {
             log.info("fps {}", .{count});
         }
 
-        const now_ms: i64 = std.time.milliTimestamp();
-        const start_time_ms: i64 = self.start_time_ms orelse blk: {
-            self.start_time_ms = now_ms;
-            break :blk now_ms;
-        };
-        const time_ms = now_ms - start_time_ms;
-        const time_sec = @as(f64, @floatFromInt(time_ms)) / 1000.0;
-        const clear_ranges = subresource_range(.{ .color_bit = true });
-        self.device.cmdClearColorImage(
-            cbuf,
-            self.draw_image.image,
-            .general,
-            &vk.ClearColorValue{
-                .float_32 = .{ @as(f32, @floatCast(std.math.sin(time_sec))) * 0.5 + 0.5, 0.0, 0.0, 1.0 },
-            },
-            1,
-            @ptrCast(&clear_ranges),
-        );
+        // const now_ms: i64 = std.time.milliTimestamp();
+        // const start_time_ms: i64 = self.start_time_ms orelse blk: {
+        //     self.start_time_ms = now_ms;
+        //     break :blk now_ms;
+        // };
+        // const time_ms = now_ms - start_time_ms;
+        // const time_sec = @as(f64, @floatFromInt(time_ms)) / 1000.0;
+        // const clear_ranges = subresource_range(.{ .color_bit = true });
+        // self.device.cmdClearColorImage(
+        //     cbuf,
+        //     self.draw_image.image,
+        //     .general,
+        //     &vk.ClearColorValue{
+        //         .float_32 = .{ @as(f32, @floatCast(std.math.sin(time_sec))) * 0.5 + 0.5, 0.0, 0.0, 1.0 },
+        //     },
+        //     1,
+        //     @ptrCast(&clear_ranges),
+        // );
 
         self.device.cmdBindPipeline(cbuf, .compute, self.pipeline);
         self.device.cmdBindDescriptorSets(cbuf, .compute, self.pipeline_layout, 0, 1, @ptrCast(&self.descriptor_set), 0, null);

@@ -9,7 +9,7 @@ void main() {
     ivec2 size = imageSize(image);
 
     if (coord.x < size.x && coord.y < size.y) {
-        imageStore(image, coord, vec4(0.0, 0.0, 0.0, 1.0));
+        imageStore(image, coord, vec4(float(coord.x) / size.x, float(coord.y) / size.y, 0.0, 1.0));
         // return;
     }
 }
