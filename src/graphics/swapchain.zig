@@ -13,12 +13,11 @@ pub const Swapchain = struct {
     swapchain: vk.SwapchainKHR,
     format: vk.Format,
     extent: vk.Extent2D,
-    images: []Image,
+    images: []vk.Image,
     suboptimal: bool,
 
     pub const Image = struct {
         image: vk.Image,
-        view: vk.ImageView,
         index: u32,
     };
 
@@ -40,15 +39,12 @@ pub const Swapchain = struct {
         allocator: std.mem.Allocator,
         device: Device,
     ) void {
-        for (self.images) |*image| {
-            device.destroyImageView(image.view, null);
-        }
         allocator.free(self.images);
 
         device.destroySwapchainKHR(self.swapchain, null);
     }
 
-    pub fn acquireImage(self: *Self, device: Device, on_acquire: vk.Semaphore) !*Image {
+    pub fn acquireImage(self: *Self, device: Device, on_acquire: vk.Semaphore) !Image {
         while (true) {
             if (self.suboptimal) {
                 // TODO: recreate swapchain
@@ -66,7 +62,10 @@ pub const Swapchain = struct {
                 return error.SwapchainNotReady;
             }
 
-            return &self.images[result.image_index];
+            return Image{
+                .image = self.images[result.image_index],
+                .index = result.image_index,
+            };
         }
     }
 
@@ -132,42 +131,8 @@ pub const Swapchain = struct {
         // self.swapchain_extent = create_info.image_extent;
         // self.swapchain_suboptimal = false;
 
-        const tmp_images = try device.getSwapchainImagesAllocKHR(swapchain, allocator);
-        defer allocator.free(tmp_images);
-
-        const images = try allocator.alloc(Image, tmp_images.len);
+        const images = try device.getSwapchainImagesAllocKHR(swapchain, allocator);
         errdefer allocator.free(images);
-
-        for (tmp_images, images, 0..) |image, *saved_image, i| {
-            saved_image.image = image;
-            saved_image.index = @truncate(i);
-
-            const image_view = device.createImageView(&vk.ImageViewCreateInfo{
-                .image = image,
-                .view_type = .@"2d",
-                .format = create_info.image_format,
-                .components = .{
-                    .r = .identity,
-                    .g = .identity,
-                    .b = .identity,
-                    .a = .identity,
-                },
-                .subresource_range = .{
-                    .aspect_mask = .{ .color_bit = true },
-                    .base_mip_level = 0,
-                    .level_count = 1,
-                    .base_array_layer = 0,
-                    .layer_count = 1,
-                },
-            }, null);
-
-            saved_image.view = image_view catch |err| {
-                for (images, 0..i) |*deleting_view, _| {
-                    device.destroyImageView(deleting_view.view, null);
-                }
-                return err;
-            };
-        }
 
         return Self{
             .swapchain = swapchain,
