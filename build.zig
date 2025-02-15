@@ -4,6 +4,11 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const comp_compile = b.addSystemCommand(&.{ "glslc", "-DCOMP=1", "-fshader-stage=comp" });
+    comp_compile.addFileArg(b.path("src/graphics/shader.glsl"));
+    comp_compile.addArg("-o");
+    const shader_comp_spirv = comp_compile.addOutputFileArg("shader.comp.spirv");
+
     const vk_dep = b.dependency("vulkan_headers", .{});
     const vk_zig_dep = b.dependency("vulkan_zig", .{});
     const glfw_dep = b.dependency("glfw", .{});
@@ -71,6 +76,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("vk", vk);
     exe.root_module.addImport("glfw", glfw);
     exe.root_module.addImport("vma", vma);
+    exe.root_module.addAnonymousImport("shader-comp", .{ .root_source_file = shader_comp_spirv });
 
     b.installArtifact(exe);
 

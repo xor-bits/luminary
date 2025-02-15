@@ -12,6 +12,8 @@ const QueueFamilies = @import("graphics/queues.zig").QueueFamilies;
 const Dispatch = @import("graphics/dispatch.zig").Dispatch;
 const DeletionQueue = @import("graphics/deletion_queue.zig").DeletionQueue;
 const Image = @import("graphics/image.zig").Image;
+const DescriptorPool = @import("graphics/shader.zig").DescriptorPool;
+const Module = @import("graphics/shader.zig").Module;
 const Counter = @import("counter.zig").Counter;
 
 //
@@ -43,23 +45,29 @@ pub const Allocator = std.mem.Allocator;
 
 pub const Graphics = struct {
     allocator: Allocator,
-
     window: *glfw.Window,
-
     dispatch: *Dispatch,
 
+    // backend stuff
     instance: Instance,
     debug_messenger: vk.DebugUtilsMessengerEXT,
     surface: vk.SurfaceKHR,
     gpu: Gpu,
 
+    // logical stuff
     device: Device,
     queues: Queues,
 
     vma: Vma,
     swapchain: Swapchain,
     frame: Frame,
+    descriptor_pool: DescriptorPool,
+    descriptor_layout: vk.DescriptorSetLayout,
+    descriptor_set: vk.DescriptorSet,
+    pipeline_layout: vk.PipelineLayout,
+    pipeline: vk.Pipeline,
 
+    // main render target
     draw_image: Image,
 
     fps_counter: Counter = .{},
@@ -142,12 +150,84 @@ pub const Graphics = struct {
         });
         errdefer draw_image.deinit(device, vma);
 
+        log.info("creating main pipeline ..", .{});
+        const descriptor_pool = try DescriptorPool.init(device, &[_]vk.DescriptorPoolSize{vk.DescriptorPoolSize{
+            .type = .storage_image,
+            .descriptor_count = 10,
+        }});
+        errdefer descriptor_pool.deinit(device);
+        const binding = vk.DescriptorSetLayoutBinding{
+            .binding = 0,
+            .descriptor_type = .storage_image,
+            .descriptor_count = 1,
+            .stage_flags = .{ .compute_bit = true },
+        };
+        const descriptor_layout = try device.createDescriptorSetLayout(&vk.DescriptorSetLayoutCreateInfo{
+            .binding_count = 1,
+            .p_bindings = @ptrCast(&binding),
+        }, null);
+        errdefer device.destroyDescriptorSetLayout(descriptor_layout, null);
+        const descriptor_set = try descriptor_pool.alloc(device, descriptor_layout);
+
+        const draw_image_target = vk.DescriptorImageInfo{
+            .sampler = .null_handle,
+            .image_view = draw_image.view,
+            .image_layout = .general,
+        };
+        const draw_image_binding = vk.WriteDescriptorSet{
+            .dst_binding = 0,
+            .dst_set = descriptor_set,
+            .dst_array_element = 0,
+            .descriptor_count = 1,
+            .descriptor_type = .storage_image,
+            .p_image_info = @ptrCast(&draw_image_target),
+            .p_buffer_info = @ptrCast(&draw_image_target),
+            .p_texel_buffer_view = @ptrCast(&draw_image_target),
+        };
+        device.updateDescriptorSets(
+            1,
+            @ptrCast(&draw_image_binding),
+            0,
+            null,
+        );
+
+        const layout = try device.createPipelineLayout(&vk.PipelineLayoutCreateInfo{
+            .set_layout_count = 1,
+            .p_set_layouts = @ptrCast(&descriptor_layout),
+        }, null);
+        errdefer device.destroyPipelineLayout(layout, null);
+
+        const module = try Module.loadFromMemory(device, @embedFile("shader-comp"));
+        defer module.deinit(device);
+        const stage_info = vk.PipelineShaderStageCreateInfo{
+            .stage = .{ .compute_bit = true },
+            .module = module.module,
+            .p_name = "main\x00",
+        };
+        const pipeline_create_info = vk.ComputePipelineCreateInfo{
+            .stage = stage_info,
+            .layout = layout,
+            .base_pipeline_index = 0,
+            .base_pipeline_handle = .null_handle,
+        };
+        var pipeline: vk.Pipeline = undefined;
+        const res = try device.createComputePipelines(
+            .null_handle,
+            1,
+            @ptrCast(&pipeline_create_info),
+            null,
+            @ptrCast(&pipeline),
+        );
+        if (res != .success) {
+            log.err("failed to create pipeline: {}", .{res});
+            return error.PipelineCreateFailed;
+        }
+        errdefer device.destroyPipeline(pipeline, null);
+
         log.info("renderer initialization done", .{});
         return Self{
             .allocator = allocator,
-
             .window = window,
-
             .dispatch = dispatch,
 
             .instance = instance,
@@ -161,6 +241,11 @@ pub const Graphics = struct {
             .vma = vma,
             .swapchain = swapchain,
             .frame = frame,
+            .descriptor_pool = descriptor_pool,
+            .descriptor_layout = descriptor_layout,
+            .descriptor_set = descriptor_set,
+            .pipeline_layout = layout,
+            .pipeline = pipeline,
 
             .draw_image = draw_image,
         };
@@ -168,6 +253,12 @@ pub const Graphics = struct {
 
     pub fn deinit(self: *Self) void {
         _ = self.device.deviceWaitIdle() catch {};
+
+        self.device.destroyPipeline(self.pipeline, null);
+        self.device.destroyPipelineLayout(self.pipeline_layout, null);
+
+        self.device.destroyDescriptorSetLayout(self.descriptor_layout, null);
+        self.descriptor_pool.deinit(self.device);
 
         self.draw_image.deinit(self.device, self.vma);
         self.frame.deinit(self.device);
@@ -190,28 +281,39 @@ pub const Graphics = struct {
             vk.apiVersionPatch(version),
         });
 
-        var glfw_exts_count: u32 = 0;
-        const glfw_exts = glfw.getRequiredInstanceExtensions(&glfw_exts_count) orelse &[0][*]const u8{};
+        const avail_layers = try dispatch.base.enumerateInstanceLayerPropertiesAlloc(allocator);
+        defer allocator.free(avail_layers);
+        var layers = std.ArrayList([*:0]const u8).init(allocator);
+        defer layers.deinit();
 
-        const layers = try dispatch.base.enumerateInstanceLayerPropertiesAlloc(allocator);
-        defer allocator.free(layers);
+        const layer_validation = "VK_LAYER_KHRONOS_validation";
+        const layer_renderdoc = "VK_LAYER_RENDERDOC_Capture";
 
-        const vk_layer_khronos_validation = "VK_LAYER_KHRONOS_validation";
-        var vk_layer_khronos_validation_found = false;
-        for (layers) |layer| {
+        for (avail_layers) |layer| {
             const name = std.mem.sliceTo(&layer.layer_name, 0);
             log.debug("layer: {s}", .{name});
 
-            if (std.mem.eql(u8, name, vk_layer_khronos_validation)) {
-                vk_layer_khronos_validation_found = true;
-                break;
+            if (std.mem.eql(u8, name, layer_validation)) {
+                try layers.append(layer_validation);
+            }
+            if (std.mem.eql(u8, name, layer_renderdoc)) {
+                // try layers.append(layer_renderdoc);
             }
         }
 
-        var extensions = std.ArrayList([*]const u8).init(allocator);
+        log.debug("using layers:", .{});
+        for (0..layers.items.len) |i| {
+            const layer = layers.items.ptr[i];
+            log.info(" - {s}", .{layer});
+        }
+
+        var glfw_exts_count: u32 = 0;
+        const glfw_exts = glfw.getRequiredInstanceExtensions(&glfw_exts_count) orelse &[0][*]const u8{};
+
+        var extensions = std.ArrayList([*:0]const u8).init(allocator);
         defer extensions.deinit();
-        try extensions.appendSlice(glfw_exts[0..glfw_exts_count]);
-        try extensions.append(vk.extensions.ext_debug_utils.name.ptr);
+        try extensions.appendSlice(@ptrCast(glfw_exts[0..glfw_exts_count]));
+        try extensions.append(vk.extensions.ext_debug_utils.name);
 
         const instance = try dispatch.base.createInstance(&vk.InstanceCreateInfo{
             .p_application_info = &vk.ApplicationInfo{
@@ -222,9 +324,9 @@ pub const Graphics = struct {
                 .api_version = api_version,
             },
             .enabled_extension_count = @truncate(extensions.items.len),
-            .pp_enabled_extension_names = @ptrCast(extensions.items.ptr),
-            .enabled_layer_count = @intFromBool(vk_layer_khronos_validation_found),
-            .pp_enabled_layer_names = &.{vk_layer_khronos_validation},
+            .pp_enabled_extension_names = extensions.items.ptr,
+            .enabled_layer_count = @truncate(layers.items.len),
+            .pp_enabled_layer_names = layers.items.ptr,
         }, null);
 
         try dispatch.loadInstance(instance);
@@ -507,7 +609,6 @@ pub const Graphics = struct {
         };
         const time_ms = now_ms - start_time_ms;
         const time_sec = @as(f64, @floatFromInt(time_ms)) / 1000.0;
-
         const clear_ranges = subresource_range(.{ .color_bit = true });
         self.device.cmdClearColorImage(
             cbuf,
@@ -518,6 +619,15 @@ pub const Graphics = struct {
             },
             1,
             @ptrCast(&clear_ranges),
+        );
+
+        self.device.cmdBindPipeline(cbuf, .compute, self.pipeline);
+        self.device.cmdBindDescriptorSets(cbuf, .compute, self.pipeline_layout, 0, 1, @ptrCast(&self.descriptor_set), 0, null);
+        self.device.cmdDispatch(
+            cbuf,
+            std.math.divCeil(u32, self.draw_image.extent.width, 16) catch 1,
+            std.math.divCeil(u32, self.draw_image.extent.height, 16) catch 1,
+            1,
         );
     }
 

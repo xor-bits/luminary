@@ -22,12 +22,16 @@
             # zig.packages."${system}".master
             zig
             glfw
+            # shader-slang
+            shaderc
+            glsl_analyzer
+            renderdoc
 
-            # vulkan-headers
-            vulkan-loader # validation layer(s)
-            # vulkan-memory-allocator # VMA
+            vulkan-loader
           ];
 
+          # VK_LAYER_PATH = "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d:${pkgs.vulkan-extension-layer}/share/vulkan/explicit_layer.d";
+          VK_LAYER_PATH = "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d";
           LD_LIBRARY_PATH = "${pkgs.lib.makeLibraryPath buildInputs}";
         };
       }
