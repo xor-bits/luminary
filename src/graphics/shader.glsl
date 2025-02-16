@@ -9,7 +9,8 @@ void main() {
     ivec2 size = imageSize(image);
 
     if (coord.x < size.x && coord.y < size.y) {
-        imageStore(image, coord, vec4(float(coord.x) / size.x, float(coord.y) / size.y, 0.0, 1.0));
-        // return;
+        vec4 col = vec4(float(coord.x) / size.x, float(coord.y) / size.y, 0.0, 1.0);
+        col.xy = col.xy * float(gl_LocalInvocationID.x != 0 && gl_LocalInvocationID.y != 0);
+        imageStore(image, coord, col);
     }
 }
