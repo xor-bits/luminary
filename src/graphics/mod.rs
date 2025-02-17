@@ -6,7 +6,8 @@ use winit::{raw_window_handle::HasDisplayHandle, window::Window};
 
 use self::{
     debug::DebugUtils,
-    gpu::{QueueFamilies, pick_gpu},
+    gpu::pick_gpu,
+    queues::{QueueFamilies, Queues},
     surface::Surface,
 };
 
@@ -14,6 +15,7 @@ use self::{
 
 mod debug;
 mod gpu;
+mod queues;
 mod surface;
 
 //
@@ -28,6 +30,7 @@ pub struct Graphics {
     queue_families: QueueFamilies,
 
     device: Device,
+    queues: Queues,
 }
 
 impl Graphics {
@@ -44,6 +47,8 @@ impl Graphics {
 
         let device = Self::create_device(&instance, gpu, &queue_families)?;
 
+        let queues = Queues::new(&device, &queue_families);
+
         Ok(Self {
             entry,
             instance,
@@ -54,6 +59,7 @@ impl Graphics {
             queue_families,
 
             device,
+            queues,
         })
     }
 

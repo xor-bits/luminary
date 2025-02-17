@@ -4,6 +4,8 @@ use ash::{Entry, Instance, khr, vk};
 
 use eyre::{Result, eyre};
 
+use super::queues::QueueFamilies;
+
 //
 
 pub fn pick_gpu(
@@ -195,8 +197,8 @@ fn find_queues(
     families.dedup_by_key(|i| i.queue_family_index);
 
     Some(QueueFamilies {
-        graphics,
         present,
+        graphics,
         transfer,
         compute,
         families: families.into_boxed_slice(),
@@ -249,15 +251,3 @@ fn find_queue(
 
 pub const REQUIRED_EXTS_CSTR: [&CStr; 1] = [khr::swapchain::NAME];
 pub const REQUIRED_EXTS_PTRPTR: [*const i8; 1] = [khr::swapchain::NAME.as_ptr()];
-
-//
-
-#[derive(Debug)]
-pub struct QueueFamilies {
-    pub graphics: u32,
-    pub present: u32,
-    pub transfer: u32,
-    pub compute: u32,
-
-    pub families: Box<[vk::DeviceQueueCreateInfo<'static>]>,
-}
