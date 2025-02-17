@@ -11,6 +11,7 @@ use self::{
     delete_queue::DeleteQueue,
     frame::FramesInFlight,
     gpu::pick_gpu,
+    image::Image,
     queues::{QueueFamilies, Queues},
     surface::Surface,
     swapchain::Swapchain,
@@ -22,6 +23,7 @@ mod debug;
 mod delete_queue;
 mod frame;
 mod gpu;
+mod image;
 mod queues;
 mod surface;
 mod swapchain;
@@ -45,6 +47,9 @@ pub struct Graphics {
 
     frames: FramesInFlight,
 
+    render_target: Image,
+    render_target_delete_queue: DeleteQueue,
+
     global_delete_queue: DeleteQueue,
 }
 
@@ -63,7 +68,7 @@ impl Graphics {
 
         let debug_utils = DebugUtils::new(&entry, &instance)?;
 
-        let surface = Surface::new(window, &entry, &instance)?;
+        let surface = Surface::new(window.clone(), &entry, &instance)?;
 
         let (gpu, queue_families) = pick_gpu(&entry, &instance, surface.inner)?;
 
@@ -79,11 +84,20 @@ impl Graphics {
             &queue_families,
             surface.inner,
             extent,
+            window,
         )?;
 
-        let allocator = ManuallyDrop::new(Self::create_allocator(&instance, gpu, &device)?);
+        let mut allocator = ManuallyDrop::new(Self::create_allocator(&instance, gpu, &device)?);
 
         let frames = FramesInFlight::new(&device, &queue_families, &mut global_delete_queue)?;
+
+        let mut render_target_delete_queue = DeleteQueue::new();
+        let render_target = Self::create_render_image(
+            &device,
+            &mut allocator,
+            &mut render_target_delete_queue,
+            extent,
+        )?;
 
         Ok(Self {
             entry,
@@ -102,21 +116,69 @@ impl Graphics {
 
             frames,
 
-            global_delete_queue: DeleteQueue::new(),
+            render_target,
+            render_target_delete_queue,
+
+            global_delete_queue,
         })
     }
 
     pub fn draw(&mut self) -> Result<()> {
-        let (frame, _) = self.frames.next();
-        frame.wait(&self.device)?;
+        let (frame, frame_i) = self.frames.next();
+        frame.wait(&self.device, &mut self.allocator)?;
 
-        let swapchain_image = self
-            .swapchain
-            .acquire(frame.swapchain_sema, &self.queue_families)?;
+        let swapchain_image =
+            self.swapchain
+                .acquire(&self.device, frame.swapchain_sema, &self.queue_families)?;
 
         frame.begin(&self.device)?;
 
-        // draw ..
+        // make the main render target usable for rendering
+        Self::transition_image(
+            &self.device,
+            frame.main_cbuf,
+            self.render_target.image,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::GENERAL,
+        );
+
+        // render everything
+        self.draw_scene();
+
+        let frame = self.frames.get(frame_i);
+
+        // blit the render target image to swapchain
+        Self::transition_image(
+            &self.device,
+            frame.main_cbuf,
+            self.render_target.image,
+            vk::ImageLayout::GENERAL,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+        );
+        Self::transition_image(
+            &self.device,
+            frame.main_cbuf,
+            swapchain_image.image,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        );
+        Self::blit_image(
+            &self.device,
+            frame.main_cbuf,
+            self.render_target.image,
+            self.render_target.extent,
+            swapchain_image.image,
+            self.swapchain.extent,
+        );
+
+        // make the swapchain image usable for presenting
+        Self::transition_image(
+            &self.device,
+            frame.main_cbuf,
+            swapchain_image.image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::ImageLayout::PRESENT_SRC_KHR,
+        );
 
         frame.end(&self.device)?;
         frame.submit(&self.device, self.queues.graphics)?;
@@ -127,12 +189,40 @@ impl Graphics {
         Ok(())
     }
 
-    pub fn resize(&mut self, size: PhysicalSize<u32>) -> Result<()> {
+    pub fn draw_scene(&mut self) {}
+
+    pub fn resize(&mut self) -> Result<()> {
         self.swapchain
-            .recreate(&self.queue_families, vk::Extent2D {
-                width: size.width,
-                height: size.height,
-            })?;
+            .recreate(&self.device, &self.queue_families)?;
+
+        let target_ext = self.render_target.extent;
+        let surface_ext = self.swapchain.extent;
+
+        // resize the render target if it cant fit the swapchain image at full res
+        // or when the render target is way bigger than the swapchain image
+        const RENDER_TARGET_MULTIPLES: u32 = 256;
+        if target_ext.width >= surface_ext.width
+            && target_ext.height >= surface_ext.height
+            && target_ext.width.abs_diff(surface_ext.width) <= RENDER_TARGET_MULTIPLES
+            && target_ext.width.abs_diff(surface_ext.width) <= RENDER_TARGET_MULTIPLES
+        {
+            return Ok(());
+        }
+
+        self.frames
+            .previous()
+            .0
+            .delete_queue
+            .append(&mut self.render_target_delete_queue);
+        self.render_target = Self::create_render_image(
+            &self.device,
+            &mut self.allocator,
+            &mut self.render_target_delete_queue,
+            vk::Extent2D {
+                width: surface_ext.width.next_multiple_of(RENDER_TARGET_MULTIPLES),
+                height: surface_ext.height.next_multiple_of(RENDER_TARGET_MULTIPLES),
+            },
+        )?;
 
         Ok(())
     }
@@ -156,7 +246,6 @@ impl Graphics {
         let validation_layer_found = layers
             .iter()
             .any(|layer| layer.layer_name_as_c_str() == Ok(validation_layer));
-
         let layers = if validation_layer_found {
             &[validation_layer.as_ptr()][..]
         } else {
@@ -224,6 +313,26 @@ impl Graphics {
         })?)
     }
 
+    fn create_render_image(
+        device: &Device,
+        allocator: &mut Allocator,
+        delete_queue: &mut DeleteQueue,
+        extent: vk::Extent2D,
+    ) -> Result<Image> {
+        let render_target = Image::builder()
+            .format(vk::Format::R16G16B16A16_SFLOAT)
+            .extent(extent)
+            .usage(
+                vk::ImageUsageFlags::TRANSFER_SRC
+                    | vk::ImageUsageFlags::TRANSFER_DST
+                    | vk::ImageUsageFlags::STORAGE
+                    | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+            )
+            .aspect_flags(vk::ImageAspectFlags::COLOR)
+            .build(device, allocator, delete_queue)?;
+        Ok(render_target)
+    }
+
     fn transition_image(
         device: &Device,
         cbuf: vk::CommandBuffer,
@@ -258,7 +367,7 @@ impl Graphics {
     }
 
     fn blit_image(
-        device: Device,
+        device: &Device,
         cbuf: vk::CommandBuffer,
         src: vk::Image,
         src_size: vk::Extent2D,
@@ -287,7 +396,7 @@ impl Graphics {
                     .y(dst_size.height as _)
                     .z(1),
             ])
-            .src_subresource(
+            .dst_subresource(
                 vk::ImageSubresourceLayers::default()
                     .aspect_mask(vk::ImageAspectFlags::COLOR)
                     .mip_level(0)
@@ -318,7 +427,12 @@ impl Graphics {
 
 impl Drop for Graphics {
     fn drop(&mut self) {
-        self.global_delete_queue.flush(&self.device);
+        _ = unsafe { self.device.device_wait_idle() };
+
+        self.render_target_delete_queue
+            .flush(&self.device, &mut self.allocator);
+        self.global_delete_queue
+            .flush(&self.device, &mut self.allocator);
 
         unsafe { ManuallyDrop::drop(&mut self.allocator) };
         self.swapchain.destroy();

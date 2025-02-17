@@ -2,6 +2,7 @@ use core::slice;
 
 use ash::{Device, vk};
 use eyre::{Result, eyre};
+use gpu_allocator::vulkan::Allocator;
 
 use super::{delete_queue::DeleteQueue, queues::QueueFamilies};
 
@@ -31,8 +32,26 @@ impl FramesInFlight {
 
     pub fn next(&mut self) -> (&mut FrameInFlight, usize) {
         let idx = self.frame;
-        self.frame = (self.frame + 1) % self.frames.len();
+        self.increment();
         (&mut self.frames[idx], idx)
+    }
+
+    pub fn current(&mut self) -> (&mut FrameInFlight, usize) {
+        let idx = self.frame;
+        (&mut self.frames[idx], idx)
+    }
+
+    pub fn previous(&mut self) -> (&mut FrameInFlight, usize) {
+        let idx = self.frame.wrapping_sub(1).min(self.frames.len() - 1);
+        (&mut self.frames[idx], idx)
+    }
+
+    pub fn increment(&mut self) {
+        self.frame = (self.frame + 1) % self.frames.len();
+    }
+
+    pub fn get(&mut self, i: usize) -> &mut FrameInFlight {
+        &mut self.frames[i]
     }
 }
 
@@ -47,7 +66,7 @@ pub struct FrameInFlight {
     /// used to wait for this frame to be complete
     pub render_fence: vk::Fence,
 
-    delete_queue: DeleteQueue,
+    pub delete_queue: DeleteQueue,
 }
 
 impl FrameInFlight {
@@ -96,11 +115,11 @@ impl FrameInFlight {
         })
     }
 
-    pub fn wait(&mut self, device: &Device) -> Result<()> {
+    pub fn wait(&mut self, device: &Device, alloc: &mut Allocator) -> Result<()> {
         unsafe { device.wait_for_fences(&[self.render_fence], true, 1_000_000_000)? };
         unsafe { device.reset_fences(&[self.render_fence])? };
 
-        self.delete_queue.flush(device);
+        self.delete_queue.flush(device, alloc);
 
         Ok(())
     }

@@ -1,11 +1,12 @@
 use core::slice;
-use std::ptr;
+use std::{ptr, sync::Arc};
 
 use ash::{
     Device, Entry, Instance, khr,
     vk::{self, Handle},
 };
 use eyre::{Result, bail};
+use winit::window::Window;
 
 use crate::cold;
 
@@ -14,10 +15,12 @@ use super::queues::QueueFamilies;
 //
 
 pub struct Swapchain {
+    window: Arc<Window>,
+
     inner: vk::SwapchainKHR,
     surface: vk::SurfaceKHR,
     gpu: vk::PhysicalDevice,
-    extent: vk::Extent2D,
+    pub extent: vk::Extent2D,
     format: vk::Format,
     images: Box<[vk::Image]>,
     suboptimal: bool,
@@ -27,6 +30,7 @@ pub struct Swapchain {
 }
 
 impl Swapchain {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         entry: &Entry,
         instance: &Instance,
@@ -35,6 +39,7 @@ impl Swapchain {
         queue_families: &QueueFamilies,
         surface: vk::SurfaceKHR,
         extent: vk::Extent2D,
+        window: Arc<Window>,
     ) -> Result<Self> {
         let surface_loader = khr::surface::Instance::new(entry, instance);
         let swapchain_loader = khr::swapchain::Device::new(instance, device);
@@ -46,11 +51,20 @@ impl Swapchain {
             queue_families,
             surface,
             extent,
+            window,
         )?;
         Ok(res)
     }
 
-    pub fn recreate(&mut self, queue_families: &QueueFamilies, extent: vk::Extent2D) -> Result<()> {
+    pub fn recreate(&mut self, device: &Device, queue_families: &QueueFamilies) -> Result<()> {
+        _ = unsafe { device.device_wait_idle() };
+
+        let size = self.window.inner_size();
+        let extent = vk::Extent2D {
+            width: size.width,
+            height: size.height,
+        };
+
         self.destroy();
 
         *self = Self::create(
@@ -60,6 +74,7 @@ impl Swapchain {
             queue_families,
             self.surface,
             extent,
+            self.window.clone(),
         )?;
 
         Ok(())
@@ -67,12 +82,13 @@ impl Swapchain {
 
     pub fn acquire(
         &mut self,
+        device: &Device,
         on_acquire: vk::Semaphore,
         queue_families: &QueueFamilies,
     ) -> Result<SwapchainImage> {
         loop {
             if self.suboptimal {
-                self.recreate(queue_families, self.extent)?;
+                self.recreate(device, queue_families)?;
             }
 
             let res = unsafe {
@@ -95,6 +111,9 @@ impl Swapchain {
                 Err(vk::Result::NOT_READY) => continue,
                 Err(vk::Result::TIMEOUT) => {
                     bail!("swapchain timeout")
+                }
+                Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                    self.recreate(device, queue_families);
                 }
                 Err(err) => {
                     eyre::bail!("failed to acquire next image: {err}")
@@ -135,6 +154,7 @@ impl Swapchain {
         queue_families: &QueueFamilies,
         surface: vk::SurfaceKHR,
         extent: vk::Extent2D,
+        window: Arc<Window>,
     ) -> Result<Self> {
         let surface_formats =
             unsafe { surface_loader.get_physical_device_surface_formats(gpu, surface)? };
@@ -156,9 +176,9 @@ impl Swapchain {
         let queue_family_indices = [queue_families.present, queue_families.graphics];
         let (sharing_mode, queue_family_indices) =
             if queue_family_indices[0] == queue_family_indices[1] {
-                (vk::SharingMode::EXCLUSIVE, &queue_family_indices[..])
+                (vk::SharingMode::EXCLUSIVE, &[][..])
             } else {
-                (vk::SharingMode::CONCURRENT, &[][..])
+                (vk::SharingMode::CONCURRENT, &queue_family_indices[..])
             };
 
         let extent = vk::Extent2D {
@@ -192,6 +212,8 @@ impl Swapchain {
         let images = unsafe { swapchain_loader.get_swapchain_images(inner)? }.into_boxed_slice();
 
         Ok(Self {
+            window,
+
             inner,
             surface,
             gpu,
@@ -230,6 +252,6 @@ impl Swapchain {
 #[must_use]
 #[derive(Debug)]
 pub struct SwapchainImage {
-    image: vk::Image,
+    pub image: vk::Image,
     index: u32,
 }

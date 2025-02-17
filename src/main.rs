@@ -3,6 +3,7 @@ use std::sync::Arc;
 use eyre::Result;
 use winit::{
     application::ApplicationHandler,
+    dpi::PhysicalSize,
     event::{ElementState, KeyEvent, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
@@ -31,7 +32,11 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.inner.get_or_insert_with(|| {
             let window: Arc<Window> = event_loop
-                .create_window(Window::default_attributes().with_title("luminar"))
+                .create_window(
+                    Window::default_attributes()
+                        .with_title("luminar")
+                        .with_inner_size(PhysicalSize::<u32>::from((64u32, 64u32))),
+                )
                 .unwrap()
                 .into();
 
@@ -64,7 +69,8 @@ impl ApplicationHandler for App {
                 inner.graphics.draw().expect("failed to draw");
             }
             WindowEvent::Resized(size) => {
-                inner.graphics.resize(size).expect("failed to resize");
+                inner.graphics.resize().expect("failed to resize");
+                tracing::debug!("resized to {}x{}", size.width, size.height);
             }
             _ => {}
         }
