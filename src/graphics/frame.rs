@@ -1,14 +1,9 @@
 use core::slice;
 
-use ash::{
-    Device,
-    vk::{self, Handle},
-};
+use ash::{Device, vk};
 use eyre::{Result, eyre};
 
-use crate::cold;
-
-use super::queues::QueueFamilies;
+use super::{delete_queue::DeleteQueue, queues::QueueFamilies};
 
 //
 
@@ -18,13 +13,17 @@ pub struct FramesInFlight {
 }
 
 impl FramesInFlight {
-    pub fn new(device: &Device, queue_families: &QueueFamilies) -> Result<Self> {
+    pub fn new(
+        device: &Device,
+        queue_families: &QueueFamilies,
+        delete_queue: &mut DeleteQueue,
+    ) -> Result<Self> {
         Ok({
             Self {
                 frame: 0,
                 frames: [
-                    FrameInFlight::new(device, queue_families)?,
-                    FrameInFlight::new(device, queue_families)?,
+                    FrameInFlight::new(device, queue_families, delete_queue)?,
+                    FrameInFlight::new(device, queue_families, delete_queue)?,
                 ],
             }
         })
@@ -34,12 +33,6 @@ impl FramesInFlight {
         let idx = self.frame;
         self.frame = (self.frame + 1) % self.frames.len();
         (&mut self.frames[idx], idx)
-    }
-
-    pub fn destroy(&mut self, device: &Device) {
-        for frame in self.frames.iter_mut() {
-            frame.destroy(device);
-        }
     }
 }
 
@@ -53,15 +46,22 @@ pub struct FrameInFlight {
     pub render_sema: vk::Semaphore,
     /// used to wait for this frame to be complete
     pub render_fence: vk::Fence,
+
+    delete_queue: DeleteQueue,
 }
 
 impl FrameInFlight {
-    pub fn new(device: &Device, queue_families: &QueueFamilies) -> Result<Self> {
+    pub fn new(
+        device: &Device,
+        queue_families: &QueueFamilies,
+        delete_queue: &mut DeleteQueue,
+    ) -> Result<Self> {
         let create_info = vk::CommandPoolCreateInfo::default()
             .queue_family_index(queue_families.graphics)
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
 
         let command_pool = unsafe { device.create_command_pool(&create_info, None)? };
+        delete_queue.push(command_pool);
 
         let alloc_info = vk::CommandBufferAllocateInfo::default()
             .command_pool(command_pool)
@@ -78,10 +78,13 @@ impl FrameInFlight {
 
         let create_info = vk::SemaphoreCreateInfo::default();
         let swapchain_sema = unsafe { device.create_semaphore(&create_info, None)? };
+        delete_queue.push(swapchain_sema);
         let render_sema = unsafe { device.create_semaphore(&create_info, None)? };
+        delete_queue.push(render_sema);
 
         let create_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
         let render_fence = unsafe { device.create_fence(&create_info, None)? };
+        delete_queue.push(render_fence);
 
         Ok(Self {
             command_pool,
@@ -89,12 +92,15 @@ impl FrameInFlight {
             swapchain_sema,
             render_sema,
             render_fence,
+            delete_queue: DeleteQueue::new(),
         })
     }
 
     pub fn wait(&mut self, device: &Device) -> Result<()> {
         unsafe { device.wait_for_fences(&[self.render_fence], true, 1_000_000_000)? };
         unsafe { device.reset_fences(&[self.render_fence])? };
+
+        self.delete_queue.flush(device);
 
         Ok(())
     }
@@ -141,35 +147,5 @@ impl FrameInFlight {
         unsafe { device.queue_submit2(queue, slice::from_ref(&submit_info), self.render_fence)? };
 
         Ok(())
-    }
-
-    pub fn destroy(&mut self, device: &Device) {
-        if !self.render_fence.is_null() {
-            unsafe { device.destroy_fence(self.render_fence, None) };
-            self.render_fence = vk::Fence::null();
-        } else {
-            cold();
-        }
-
-        if !self.render_sema.is_null() {
-            unsafe { device.destroy_semaphore(self.render_sema, None) };
-            self.render_sema = vk::Semaphore::null();
-        } else {
-            cold();
-        }
-
-        if !self.swapchain_sema.is_null() {
-            unsafe { device.destroy_semaphore(self.swapchain_sema, None) };
-            self.swapchain_sema = vk::Semaphore::null();
-        } else {
-            cold();
-        }
-
-        if !self.command_pool.is_null() {
-            unsafe { device.destroy_command_pool(self.command_pool, None) };
-            self.command_pool = vk::CommandPool::null();
-        } else {
-            cold();
-        }
     }
 }

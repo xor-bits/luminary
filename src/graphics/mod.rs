@@ -8,6 +8,7 @@ use winit::{dpi::PhysicalSize, raw_window_handle::HasDisplayHandle, window::Wind
 
 use self::{
     debug::DebugUtils,
+    delete_queue::DeleteQueue,
     frame::FramesInFlight,
     gpu::pick_gpu,
     queues::{QueueFamilies, Queues},
@@ -18,6 +19,7 @@ use self::{
 //
 
 mod debug;
+mod delete_queue;
 mod frame;
 mod gpu;
 mod queues;
@@ -42,6 +44,8 @@ pub struct Graphics {
     allocator: ManuallyDrop<Allocator>,
 
     frames: FramesInFlight,
+
+    global_delete_queue: DeleteQueue,
 }
 
 impl Graphics {
@@ -51,6 +55,7 @@ impl Graphics {
             width: size.width,
             height: size.height,
         };
+        let mut global_delete_queue = DeleteQueue::new();
 
         let entry = ash::Entry::linked();
 
@@ -78,7 +83,7 @@ impl Graphics {
 
         let allocator = ManuallyDrop::new(Self::create_allocator(&instance, gpu, &device)?);
 
-        let frames = FramesInFlight::new(&device, &queue_families)?;
+        let frames = FramesInFlight::new(&device, &queue_families, &mut global_delete_queue)?;
 
         Ok(Self {
             entry,
@@ -96,6 +101,8 @@ impl Graphics {
             allocator,
 
             frames,
+
+            global_delete_queue: DeleteQueue::new(),
         })
     }
 
@@ -121,13 +128,11 @@ impl Graphics {
     }
 
     pub fn resize(&mut self, size: PhysicalSize<u32>) -> Result<()> {
-        self.swapchain.recreate(
-            &self.queue_families,
-            vk::Extent2D {
+        self.swapchain
+            .recreate(&self.queue_families, vk::Extent2D {
                 width: size.width,
                 height: size.height,
-            },
-        )?;
+            })?;
 
         Ok(())
     }
@@ -313,9 +318,10 @@ impl Graphics {
 
 impl Drop for Graphics {
     fn drop(&mut self) {
-        self.frames.destroy(&self.device);
-        self.swapchain.destroy();
+        self.global_delete_queue.flush(&self.device);
+
         unsafe { ManuallyDrop::drop(&mut self.allocator) };
+        self.swapchain.destroy();
         unsafe { self.device.destroy_device(None) };
         self.surface.destroy(&self.instance);
         self.debug_utils.destroy(&self.instance);
