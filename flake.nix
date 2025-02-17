@@ -20,6 +20,7 @@
             pkg-config
             # shader-slang
             shaderc
+            rust-analyzer
             glsl_analyzer
             renderdoc
             rustup

@@ -4,7 +4,11 @@ use ash::{Entry, Instance, ext, vk};
 use eyre::Result;
 use winit::{raw_window_handle::HasDisplayHandle, window::Window};
 
-use self::{debug::DebugUtils, gpu::pick_gpu, surface::Surface};
+use self::{
+    debug::DebugUtils,
+    gpu::{QueueFamilies, pick_gpu},
+    surface::Surface,
+};
 
 //
 
@@ -19,6 +23,9 @@ pub struct Graphics {
     instance: Instance,
     debug_utils: DebugUtils,
     surface: Surface,
+
+    gpu: vk::PhysicalDevice,
+    queue_families: QueueFamilies,
 }
 
 impl Graphics {
@@ -27,9 +34,20 @@ impl Graphics {
 
         let entry = ash::Entry::linked();
 
+        let layers = unsafe { entry.enumerate_instance_layer_properties()? };
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            tracing::info!("layers:");
+            for layer in layers.iter() {
+                let name = layer
+                    .layer_name_as_c_str()
+                    .ok()
+                    .and_then(|s| s.to_str().ok())
+                    .unwrap_or("<invalid name>");
+                tracing::info!(" - {name}");
+            }
+        }
         let validation_layer = c"VK_LAYER_KHRONOS_validation";
-        let validation_layer_found = unsafe { entry.enumerate_instance_layer_properties() }
-            .unwrap()
+        let validation_layer_found = layers
             .iter()
             .any(|layer| layer.layer_name_as_c_str() == Ok(validation_layer));
 
@@ -38,6 +56,7 @@ impl Graphics {
         } else {
             &[][..]
         };
+        tracing::debug!("enabled layers: {validation_layer_found} {layers:?}");
 
         let mut extensions = ash_window::enumerate_required_extensions(window_handle)
             .unwrap()
@@ -56,7 +75,7 @@ impl Graphics {
             .enabled_layer_names(layers)
             .enabled_extension_names(&extensions);
 
-        let instance = unsafe { entry.create_instance(&instance_info, None) }.unwrap();
+        let instance = unsafe { entry.create_instance(&instance_info, None) }?;
 
         let debug_utils = DebugUtils::new(&entry, &instance)?;
 
@@ -69,6 +88,9 @@ impl Graphics {
             instance,
             debug_utils,
             surface,
+
+            gpu,
+            queue_families,
         })
     }
 

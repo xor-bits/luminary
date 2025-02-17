@@ -30,12 +30,12 @@ pub fn pick_gpu(
         }
     }
 
-    let (gpu, queue_families) = gpus
+    let (gpu, queue_families, props) = gpus
         .into_iter()
-        .find_map(|gpu| is_suitable(instance, &surface_loader, gpu, surface))
+        .filter_map(|gpu| is_suitable(instance, &surface_loader, gpu, surface))
+        .max_by_key(|(_, _, props)| score(props))
         .ok_or_else(|| eyre!("no suitable GPUs"))?;
 
-    let props = unsafe { instance.get_physical_device_properties(gpu) };
     let name = props
         .device_name_as_c_str()
         .ok()
@@ -47,12 +47,32 @@ pub fn pick_gpu(
     Ok((gpu, queue_families))
 }
 
+fn score(props: &vk::PhysicalDeviceProperties) -> usize {
+    match props.device_type {
+        vk::PhysicalDeviceType::DISCRETE_GPU => 5,
+        vk::PhysicalDeviceType::INTEGRATED_GPU => 4,
+        vk::PhysicalDeviceType::VIRTUAL_GPU => 3,
+        vk::PhysicalDeviceType::CPU => 2,
+        vk::PhysicalDeviceType::OTHER => 1,
+        _ => 0,
+    }
+}
+
 fn is_suitable(
     instance: &Instance,
     surface_loader: &khr::surface::Instance,
     gpu: vk::PhysicalDevice,
     surface: vk::SurfaceKHR,
-) -> Option<(vk::PhysicalDevice, QueueFamilies)> {
+) -> Option<(
+    vk::PhysicalDevice,
+    QueueFamilies,
+    vk::PhysicalDeviceProperties,
+)> {
+    let props = unsafe { instance.get_physical_device_properties(gpu) };
+    if props.api_version < vk::API_VERSION_1_3 {
+        return None;
+    }
+
     if !has_extensions(instance, gpu) {
         return None;
     }
@@ -63,7 +83,7 @@ fn is_suitable(
 
     let queue_families = find_queues(instance, surface_loader, gpu, surface)?;
 
-    Some((gpu, queue_families))
+    Some((gpu, queue_families, props))
 }
 
 fn has_extensions(instance: &Instance, gpu: vk::PhysicalDevice) -> bool {
