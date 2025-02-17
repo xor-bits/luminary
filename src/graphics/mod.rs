@@ -10,6 +10,7 @@ use self::{
     gpu::pick_gpu,
     queues::{QueueFamilies, Queues},
     surface::Surface,
+    swapchain::Swapchain,
 };
 
 //
@@ -18,6 +19,7 @@ mod debug;
 mod gpu;
 mod queues;
 mod surface;
+mod swapchain;
 
 //
 
@@ -32,12 +34,19 @@ pub struct Graphics {
 
     device: Device,
     queues: Queues,
+    swapchain: Swapchain,
 
     allocator: ManuallyDrop<Allocator>,
 }
 
 impl Graphics {
     pub fn new(window: Arc<Window>) -> Result<Self> {
+        let size = window.inner_size();
+        let extent = vk::Extent2D {
+            width: size.width,
+            height: size.height,
+        };
+
         let entry = ash::Entry::linked();
 
         let instance = Self::create_instance(&window, &entry)?;
@@ -52,6 +61,16 @@ impl Graphics {
 
         let queues = Queues::new(&device, &queue_families);
 
+        let swapchain = Swapchain::new(
+            &entry,
+            &instance,
+            &device,
+            gpu,
+            &queue_families,
+            surface.inner,
+            extent,
+        )?;
+
         let allocator = ManuallyDrop::new(Self::create_allocator(&instance, gpu, &device)?);
 
         Ok(Self {
@@ -65,6 +84,7 @@ impl Graphics {
 
             device,
             queues,
+            swapchain,
 
             allocator,
         })
@@ -162,6 +182,7 @@ impl Graphics {
 
 impl Drop for Graphics {
     fn drop(&mut self) {
+        self.swapchain.destroy(&self.device);
         unsafe { ManuallyDrop::drop(&mut self.allocator) };
         unsafe { self.device.destroy_device(None) };
         self.surface.destroy(&self.instance);
