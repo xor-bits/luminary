@@ -6,4 +6,11 @@ edition = "2024"
 [dependencies]
 ash = { version = "0.38.0", features = ["linked"] }
 ash-window = "0.13.0"
+color-eyre = "0.6.3"
+eyre = "0.6.12"
+tracing = "0.1.41"
+tracing-subscriber = "0.3.19"
 winit = "0.30.9"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "forbid"
