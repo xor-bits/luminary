@@ -1,3 +1,4 @@
+use core::slice;
 use std::ptr;
 
 use ash::{
@@ -46,7 +47,7 @@ impl Swapchain {
             surface,
             extent,
         )?;
-        return Ok(res);
+        Ok(res)
     }
 
     pub fn recreate(&mut self, queue_families: &QueueFamilies, extent: vk::Extent2D) -> Result<()> {
@@ -68,7 +69,7 @@ impl Swapchain {
         &mut self,
         on_acquire: vk::Semaphore,
         queue_families: &QueueFamilies,
-    ) -> Result<(vk::Image, u32)> {
+    ) -> Result<SwapchainImage> {
         loop {
             if self.suboptimal {
                 self.recreate(queue_families, self.extent)?;
@@ -77,7 +78,7 @@ impl Swapchain {
             let res = unsafe {
                 self.swapchain_loader.acquire_next_image(
                     self.inner,
-                    1_000_000, // 1 sec
+                    1_000_000_000, // 1 sec
                     on_acquire,
                     vk::Fence::null(),
                 )
@@ -86,7 +87,10 @@ impl Swapchain {
             match res {
                 Ok((index, suboptimal)) => {
                     self.suboptimal |= suboptimal;
-                    return Ok((self.images[index as usize], index));
+                    return Ok(SwapchainImage {
+                        image: self.images[index as usize],
+                        index,
+                    });
                 }
                 Err(vk::Result::NOT_READY) => continue,
                 Err(vk::Result::TIMEOUT) => {
@@ -97,6 +101,21 @@ impl Swapchain {
                 }
             }
         }
+    }
+
+    pub fn present(
+        &mut self,
+        image: SwapchainImage,
+        queue: vk::Queue,
+        wait_for: vk::Semaphore,
+    ) -> Result<()> {
+        let present_info = vk::PresentInfoKHR::default()
+            .wait_semaphores(slice::from_ref(&wait_for))
+            .swapchains(slice::from_ref(&self.inner))
+            .image_indices(slice::from_ref(&image.index));
+        self.suboptimal |= unsafe { self.swapchain_loader.queue_present(queue, &present_info)? };
+
+        Ok(())
     }
 
     pub fn destroy(&mut self) {
@@ -204,4 +223,13 @@ impl Swapchain {
             .find(|mode| *mode == vk::PresentModeKHR::MAILBOX)
             .unwrap_or(vk::PresentModeKHR::FIFO)
     }
+}
+
+//
+
+#[must_use]
+#[derive(Debug)]
+pub struct SwapchainImage {
+    image: vk::Image,
+    index: u32,
 }

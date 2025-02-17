@@ -7,6 +7,7 @@ use winit::{dpi::PhysicalSize, raw_window_handle::HasDisplayHandle, window::Wind
 
 use self::{
     debug::DebugUtils,
+    frame::FramesInFlight,
     gpu::pick_gpu,
     queues::{QueueFamilies, Queues},
     surface::Surface,
@@ -16,6 +17,7 @@ use self::{
 //
 
 mod debug;
+mod frame;
 mod gpu;
 mod queues;
 mod surface;
@@ -37,6 +39,8 @@ pub struct Graphics {
     swapchain: Swapchain,
 
     allocator: ManuallyDrop<Allocator>,
+
+    frames: FramesInFlight,
 }
 
 impl Graphics {
@@ -73,6 +77,8 @@ impl Graphics {
 
         let allocator = ManuallyDrop::new(Self::create_allocator(&instance, gpu, &device)?);
 
+        let frames = FramesInFlight::new(&device, &queue_families)?;
+
         Ok(Self {
             entry,
             instance,
@@ -87,11 +93,28 @@ impl Graphics {
             swapchain,
 
             allocator,
+
+            frames,
         })
     }
 
     pub fn draw(&mut self) -> Result<()> {
-        // self.swapchain.acquire(&self.device, on_acquire);
+        let (frame, _) = self.frames.next();
+        frame.wait(&self.device)?;
+
+        let swapchain_image = self
+            .swapchain
+            .acquire(frame.swapchain_sema, &self.queue_families)?;
+
+        frame.begin(&self.device)?;
+
+        // self.device.cmd_clear_attachments(frame.main_cbuf, &[vk::ClearAttachment::], rects);
+
+        frame.end(&self.device)?;
+        frame.submit(&self.device, self.queues.graphics)?;
+
+        self.swapchain
+            .present(swapchain_image, self.queues.present, frame.render_sema)?;
 
         Ok(())
     }
@@ -198,6 +221,7 @@ impl Graphics {
 
 impl Drop for Graphics {
     fn drop(&mut self) {
+        self.frames.destroy(&self.device);
         self.swapchain.destroy();
         unsafe { ManuallyDrop::drop(&mut self.allocator) };
         unsafe { self.device.destroy_device(None) };
