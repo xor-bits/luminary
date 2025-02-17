@@ -49,7 +49,7 @@ impl Swapchain {
         return Ok(res);
     }
 
-    pub fn recreate(&mut self, queue_families: &QueueFamilies) -> Result<()> {
+    pub fn recreate(&mut self, queue_families: &QueueFamilies, extent: vk::Extent2D) -> Result<()> {
         self.destroy();
 
         *self = Self::create(
@@ -58,7 +58,7 @@ impl Swapchain {
             self.gpu,
             queue_families,
             self.surface,
-            self.extent,
+            extent,
         )?;
 
         Ok(())
@@ -71,7 +71,7 @@ impl Swapchain {
     ) -> Result<(vk::Image, u32)> {
         loop {
             if self.suboptimal {
-                self.recreate(queue_families)?;
+                self.recreate(queue_families, self.extent)?;
             }
 
             let res = unsafe {

@@ -61,7 +61,10 @@ impl ApplicationHandler for App {
                 el.exit();
             }
             WindowEvent::RedrawRequested => {
-                inner.graphics.draw();
+                inner.graphics.draw().expect("failed to draw");
+            }
+            WindowEvent::Resized(size) => {
+                inner.graphics.resize(size).expect("failed to resize");
             }
             _ => {}
         }

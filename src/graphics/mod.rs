@@ -3,7 +3,7 @@ use std::{mem::ManuallyDrop, sync::Arc};
 use ash::{Device, Entry, Instance, ext, vk};
 use eyre::Result;
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
-use winit::{raw_window_handle::HasDisplayHandle, window::Window};
+use winit::{dpi::PhysicalSize, raw_window_handle::HasDisplayHandle, window::Window};
 
 use self::{
     debug::DebugUtils,
@@ -90,8 +90,22 @@ impl Graphics {
         })
     }
 
-    pub fn draw(&mut self) {
+    pub fn draw(&mut self) -> Result<()> {
         // self.swapchain.acquire(&self.device, on_acquire);
+
+        Ok(())
+    }
+
+    pub fn resize(&mut self, size: PhysicalSize<u32>) -> Result<()> {
+        self.swapchain.recreate(
+            &self.queue_families,
+            vk::Extent2D {
+                width: size.width,
+                height: size.height,
+            },
+        )?;
+
+        Ok(())
     }
 
     fn create_instance(window: &Window, entry: &Entry) -> Result<Instance> {
