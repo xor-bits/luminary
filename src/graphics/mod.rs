@@ -90,7 +90,9 @@ impl Graphics {
         })
     }
 
-    pub fn draw(&mut self) {}
+    pub fn draw(&mut self) {
+        // self.swapchain.acquire(&self.device, on_acquire);
+    }
 
     fn create_instance(window: &Window, entry: &Entry) -> Result<Instance> {
         let window_handle = window.display_handle().unwrap().as_raw();
@@ -182,7 +184,7 @@ impl Graphics {
 
 impl Drop for Graphics {
     fn drop(&mut self) {
-        self.swapchain.destroy(&self.device);
+        self.swapchain.destroy();
         unsafe { ManuallyDrop::drop(&mut self.allocator) };
         unsafe { self.device.destroy_device(None) };
         self.surface.destroy(&self.instance);

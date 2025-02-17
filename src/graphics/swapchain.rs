@@ -4,7 +4,7 @@ use ash::{
     Device, Entry, Instance, khr,
     vk::{self, Handle},
 };
-use eyre::Result;
+use eyre::{Result, bail};
 
 use crate::cold;
 
@@ -14,12 +14,15 @@ use super::queues::QueueFamilies;
 
 pub struct Swapchain {
     inner: vk::SwapchainKHR,
+    surface: vk::SurfaceKHR,
+    gpu: vk::PhysicalDevice,
     extent: vk::Extent2D,
     format: vk::Format,
     images: Box<[vk::Image]>,
     suboptimal: bool,
 
-    destroy_fp: vk::PFN_vkDestroySwapchainKHR,
+    surface_loader: khr::surface::Instance,
+    swapchain_loader: khr::swapchain::Device,
 }
 
 impl Swapchain {
@@ -35,6 +38,85 @@ impl Swapchain {
         let surface_loader = khr::surface::Instance::new(entry, instance);
         let swapchain_loader = khr::swapchain::Device::new(instance, device);
 
+        let res = Self::create(
+            surface_loader,
+            swapchain_loader,
+            gpu,
+            queue_families,
+            surface,
+            extent,
+        )?;
+        return Ok(res);
+    }
+
+    pub fn recreate(&mut self, queue_families: &QueueFamilies) -> Result<()> {
+        self.destroy();
+
+        *self = Self::create(
+            self.surface_loader.clone(),
+            self.swapchain_loader.clone(),
+            self.gpu,
+            queue_families,
+            self.surface,
+            self.extent,
+        )?;
+
+        Ok(())
+    }
+
+    pub fn acquire(
+        &mut self,
+        on_acquire: vk::Semaphore,
+        queue_families: &QueueFamilies,
+    ) -> Result<(vk::Image, u32)> {
+        loop {
+            if self.suboptimal {
+                self.recreate(queue_families)?;
+            }
+
+            let res = unsafe {
+                self.swapchain_loader.acquire_next_image(
+                    self.inner,
+                    1_000_000, // 1 sec
+                    on_acquire,
+                    vk::Fence::null(),
+                )
+            };
+
+            match res {
+                Ok((index, suboptimal)) => {
+                    self.suboptimal |= suboptimal;
+                    return Ok((self.images[index as usize], index));
+                }
+                Err(vk::Result::NOT_READY) => continue,
+                Err(vk::Result::TIMEOUT) => {
+                    bail!("swapchain timeout")
+                }
+                Err(err) => {
+                    eyre::bail!("failed to acquire next image: {err}")
+                }
+            }
+        }
+    }
+
+    pub fn destroy(&mut self) {
+        if self.inner.is_null() {
+            cold();
+            return;
+        }
+
+        unsafe { self.swapchain_loader.destroy_swapchain(self.inner, None) };
+        self.inner = vk::SwapchainKHR::null();
+    }
+
+    fn create(
+        surface_loader: khr::surface::Instance,
+        swapchain_loader: khr::swapchain::Device,
+        gpu: vk::PhysicalDevice,
+        queue_families: &QueueFamilies,
+        surface: vk::SurfaceKHR,
+        extent: vk::Extent2D,
+    ) -> Result<Self> {
         let surface_formats =
             unsafe { surface_loader.get_physical_device_surface_formats(gpu, surface)? };
         let surface_present_modes =
@@ -92,25 +174,16 @@ impl Swapchain {
 
         Ok(Self {
             inner,
+            surface,
+            gpu,
             extent,
             format: surface_format.format,
             images,
             suboptimal: false,
 
-            destroy_fp: swapchain_loader.fp().destroy_swapchain_khr,
+            surface_loader,
+            swapchain_loader,
         })
-    }
-
-    pub fn destroy(&mut self, device: &Device) {
-        if self.inner.is_null() {
-            cold();
-            return;
-        }
-
-        unsafe {
-            (self.destroy_fp)(device.handle(), self.inner, ptr::null());
-        }
-        self.inner = vk::SwapchainKHR::null();
     }
 
     fn preferred_format(formats: &[vk::SurfaceFormatKHR]) -> vk::SurfaceFormatKHR {
