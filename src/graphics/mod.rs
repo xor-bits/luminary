@@ -1,3 +1,4 @@
+use core::slice;
 use std::{mem::ManuallyDrop, sync::Arc};
 
 use ash::{Device, Entry, Instance, ext, vk};
@@ -108,7 +109,7 @@ impl Graphics {
 
         frame.begin(&self.device)?;
 
-        // self.device.cmd_clear_attachments(frame.main_cbuf, &[vk::ClearAttachment::], rects);
+        // draw ..
 
         frame.end(&self.device)?;
         frame.submit(&self.device, self.queues.graphics)?;
@@ -216,6 +217,97 @@ impl Graphics {
             buffer_device_address: true,
             allocation_sizes: <_>::default(),
         })?)
+    }
+
+    fn transition_image(
+        device: &Device,
+        cbuf: vk::CommandBuffer,
+        image: vk::Image,
+        from: vk::ImageLayout,
+        to: vk::ImageLayout,
+    ) {
+        let aspect = if to == vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL {
+            vk::ImageAspectFlags::DEPTH
+        } else {
+            vk::ImageAspectFlags::COLOR
+        };
+
+        let image_barrier = vk::ImageMemoryBarrier2::default()
+            // the swapchain image is a copy destination
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+            // the new layout is read+write render target
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ)
+            .old_layout(from)
+            .new_layout(to)
+            .src_queue_family_index(0)
+            .dst_queue_family_index(0)
+            .subresource_range(Self::subresource_range(aspect))
+            .image(image);
+
+        let dependency_info =
+            vk::DependencyInfo::default().image_memory_barriers(slice::from_ref(&image_barrier));
+
+        unsafe { device.cmd_pipeline_barrier2(cbuf, &dependency_info) };
+    }
+
+    fn blit_image(
+        device: Device,
+        cbuf: vk::CommandBuffer,
+        src: vk::Image,
+        src_size: vk::Extent2D,
+        dst: vk::Image,
+        dst_size: vk::Extent2D,
+    ) {
+        let blit_region = vk::ImageBlit2::default()
+            .src_offsets([
+                vk::Offset3D::default().x(0).y(0).z(0),
+                vk::Offset3D::default()
+                    .x(src_size.width as _)
+                    .y(src_size.height as _)
+                    .z(1),
+            ])
+            .src_subresource(
+                vk::ImageSubresourceLayers::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .mip_level(0)
+                    .layer_count(1)
+                    .base_array_layer(0),
+            )
+            .dst_offsets([
+                vk::Offset3D::default().x(0).y(0).z(0),
+                vk::Offset3D::default()
+                    .x(dst_size.width as _)
+                    .y(dst_size.height as _)
+                    .z(1),
+            ])
+            .src_subresource(
+                vk::ImageSubresourceLayers::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .mip_level(0)
+                    .layer_count(1)
+                    .base_array_layer(0),
+            );
+
+        let blit_info = vk::BlitImageInfo2::default()
+            .src_image(src)
+            .src_image_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .dst_image(dst)
+            .dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .filter(vk::Filter::LINEAR)
+            .regions(slice::from_ref(&blit_region));
+
+        unsafe { device.cmd_blit_image2(cbuf, &blit_info) };
+    }
+
+    fn subresource_range(aspect: vk::ImageAspectFlags) -> vk::ImageSubresourceRange {
+        vk::ImageSubresourceRange::default()
+            .aspect_mask(aspect)
+            .base_mip_level(0)
+            .level_count(vk::REMAINING_MIP_LEVELS)
+            .base_array_layer(0)
+            .layer_count(vk::REMAINING_ARRAY_LAYERS)
     }
 }
 
