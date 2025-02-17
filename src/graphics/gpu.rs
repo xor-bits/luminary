@@ -92,7 +92,7 @@ fn has_extensions(instance: &Instance, gpu: vk::PhysicalDevice) -> bool {
         return false;
     };
 
-    for required in REQUIRED_EXTS {
+    for required in REQUIRED_EXTS_CSTR {
         if !avail_exts
             .iter()
             .any(|avail| avail.extension_name_as_c_str() == Ok(required))
@@ -247,16 +247,17 @@ fn find_queue(
 
 //
 
-const REQUIRED_EXTS: &[&CStr] = &[khr::swapchain::NAME];
+pub const REQUIRED_EXTS_CSTR: [&CStr; 1] = [khr::swapchain::NAME];
+pub const REQUIRED_EXTS_PTRPTR: [*const i8; 1] = [khr::swapchain::NAME.as_ptr()];
 
 //
 
 #[derive(Debug)]
 pub struct QueueFamilies {
-    graphics: u32,
-    present: u32,
-    transfer: u32,
-    compute: u32,
+    pub graphics: u32,
+    pub present: u32,
+    pub transfer: u32,
+    pub compute: u32,
 
-    families: Box<[vk::DeviceQueueCreateInfo<'static>]>,
+    pub families: Box<[vk::DeviceQueueCreateInfo<'static>]>,
 }
