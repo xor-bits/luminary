@@ -1,7 +1,8 @@
-use std::sync::Arc;
+use std::{mem::ManuallyDrop, sync::Arc};
 
 use ash::{Device, Entry, Instance, ext, vk};
 use eyre::Result;
+use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use winit::{raw_window_handle::HasDisplayHandle, window::Window};
 
 use self::{
@@ -31,6 +32,8 @@ pub struct Graphics {
 
     device: Device,
     queues: Queues,
+
+    allocator: ManuallyDrop<Allocator>,
 }
 
 impl Graphics {
@@ -49,6 +52,8 @@ impl Graphics {
 
         let queues = Queues::new(&device, &queue_families);
 
+        let allocator = ManuallyDrop::new(Self::create_allocator(&instance, gpu, &device)?);
+
         Ok(Self {
             entry,
             instance,
@@ -60,6 +65,8 @@ impl Graphics {
 
             device,
             queues,
+
+            allocator,
         })
     }
 
@@ -136,10 +143,26 @@ impl Graphics {
         let device = unsafe { instance.create_device(gpu, &create_info, None)? };
         Ok(device)
     }
+
+    fn create_allocator(
+        instance: &Instance,
+        gpu: vk::PhysicalDevice,
+        device: &Device,
+    ) -> Result<Allocator> {
+        Ok(Allocator::new(&AllocatorCreateDesc {
+            instance: instance.clone(),
+            device: device.clone(),
+            physical_device: gpu,
+            debug_settings: <_>::default(),
+            buffer_device_address: true,
+            allocation_sizes: <_>::default(),
+        })?)
+    }
 }
 
 impl Drop for Graphics {
     fn drop(&mut self) {
+        unsafe { ManuallyDrop::drop(&mut self.allocator) };
         unsafe { self.device.destroy_device(None) };
         self.surface.destroy(&self.instance);
         self.debug_utils.destroy(&self.instance);
