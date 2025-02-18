@@ -1,10 +1,16 @@
 use core::slice;
-use std::{mem::ManuallyDrop, sync::Arc};
+use std::{
+    mem::ManuallyDrop,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use ash::{Device, Entry, Instance, ext, vk};
 use eyre::Result;
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
-use winit::{dpi::PhysicalSize, raw_window_handle::HasDisplayHandle, window::Window};
+use winit::{raw_window_handle::HasDisplayHandle, window::Window};
+
+use crate::counter::Counter;
 
 use self::{
     debug::DebugUtils,
@@ -51,6 +57,8 @@ pub struct Graphics {
     render_target_delete_queue: DeleteQueue,
 
     global_delete_queue: DeleteQueue,
+    boot_time: Instant,
+    fps: Counter,
 }
 
 impl Graphics {
@@ -120,6 +128,8 @@ impl Graphics {
             render_target_delete_queue,
 
             global_delete_queue,
+            boot_time: Instant::now(),
+            fps: Counter::new(Duration::from_secs(3)),
         })
     }
 
@@ -143,7 +153,8 @@ impl Graphics {
         );
 
         // render everything
-        self.draw_scene();
+        let cbuf = frame.main_cbuf;
+        self.draw_scene(cbuf);
 
         let frame = self.frames.get(frame_i);
 
@@ -189,7 +200,27 @@ impl Graphics {
         Ok(())
     }
 
-    pub fn draw_scene(&mut self) {}
+    pub fn draw_scene(&mut self, cbuf: vk::CommandBuffer) {
+        if let Some(per_second) = self.fps.next() {
+            tracing::info!("average FPS={per_second:.1}");
+        }
+
+        let t = self.boot_time.elapsed().as_secs_f32().sin() * 0.5 + 0.5;
+        tracing::trace!("t={t}");
+        let clear_color = vk::ClearColorValue {
+            float32: [t, t, t, 1.0],
+        };
+
+        unsafe {
+            self.device.cmd_clear_color_image(
+                cbuf,
+                self.render_target.image,
+                vk::ImageLayout::GENERAL,
+                &clear_color,
+                &[Self::subresource_range(vk::ImageAspectFlags::COLOR)],
+            );
+        }
+    }
 
     pub fn resize(&mut self) -> Result<()> {
         self.swapchain

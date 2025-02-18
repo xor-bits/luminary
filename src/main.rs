@@ -14,6 +14,7 @@ use self::graphics::Graphics;
 
 //
 
+mod counter;
 mod graphics;
 
 //
@@ -74,6 +75,13 @@ impl ApplicationHandler for App {
             }
             _ => {}
         }
+    }
+
+    fn about_to_wait(&mut self, _: &ActiveEventLoop) {
+        let Some(inner) = self.inner.as_mut() else {
+            return;
+        };
+        inner.graphics.draw().expect("failed to draw");
     }
 }
 
