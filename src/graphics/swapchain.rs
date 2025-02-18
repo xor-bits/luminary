@@ -113,7 +113,7 @@ impl Swapchain {
                     bail!("swapchain timeout")
                 }
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                    self.recreate(device, queue_families);
+                    self.recreate(device, queue_families)?;
                 }
                 Err(err) => {
                     eyre::bail!("failed to acquire next image: {err}")
