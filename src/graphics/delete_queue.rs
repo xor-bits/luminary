@@ -64,6 +64,11 @@ pub enum DeletionEntry {
     Image(vk::Image),
     ImageView(vk::ImageView),
     Allocation(Allocation),
+    ShaderModule(vk::ShaderModule),
+    DescriptorPool(vk::DescriptorPool),
+    DescriptorSetLayout(vk::DescriptorSetLayout),
+    Pipeline(vk::Pipeline),
+    PipelineLayout(vk::PipelineLayout),
 }
 
 impl DeletionEntry {
@@ -86,13 +91,33 @@ impl DeletionEntry {
                 device.destroy_image(image, None);
             },
             DeletionEntry::ImageView(image_view) => unsafe {
-                tracing::debug!("deleting imageview");
+                tracing::debug!("deleting image view");
                 device.destroy_image_view(image_view, None);
             },
             DeletionEntry::Allocation(allocation) => {
                 tracing::debug!("deleting allocation");
                 alloc.free(allocation)?;
             }
+            DeletionEntry::ShaderModule(shader_module) => unsafe {
+                tracing::debug!("deleting shader module");
+                device.destroy_shader_module(shader_module, None);
+            },
+            DeletionEntry::DescriptorPool(descriptor_pool) => unsafe {
+                tracing::debug!("deleting descriptor pool");
+                device.destroy_descriptor_pool(descriptor_pool, None);
+            },
+            DeletionEntry::DescriptorSetLayout(descriptor_set_layout) => unsafe {
+                tracing::debug!("deleting descriptor set layout");
+                device.destroy_descriptor_set_layout(descriptor_set_layout, None);
+            },
+            DeletionEntry::Pipeline(pipeline) => unsafe {
+                tracing::debug!("deleting pipeline");
+                device.destroy_pipeline(pipeline, None);
+            },
+            DeletionEntry::PipelineLayout(pipeline_layout) => unsafe {
+                tracing::debug!("deleting pipeline layout");
+                device.destroy_pipeline_layout(pipeline_layout, None);
+            },
         }
 
         Ok(())
@@ -116,5 +141,6 @@ macro_rules! impl_from {
 }
 
 impl_from! {
-    Semaphore, Fence, CommandPool, Image, ImageView,
+    Semaphore, Fence, CommandPool, Image, ImageView, ShaderModule,
+    DescriptorPool, DescriptorSetLayout, Pipeline, PipelineLayout,
 }

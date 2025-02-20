@@ -1,3 +1,6 @@
+#![allow(internal_features)]
+#![feature(core_intrinsics, unsigned_is_multiple_of, const_heap)]
+
 use std::sync::Arc;
 
 use eyre::Result;

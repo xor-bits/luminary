@@ -1,5 +1,5 @@
 use core::slice;
-use std::{ptr, sync::Arc};
+use std::sync::Arc;
 
 use ash::{
     Device, Entry, Instance, khr,

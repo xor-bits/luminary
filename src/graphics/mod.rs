@@ -15,10 +15,13 @@ use crate::counter::Counter;
 use self::{
     debug::DebugUtils,
     delete_queue::DeleteQueue,
+    descriptor::{DescriptorPool, DescriptorSet, DescriptorSetLayout, DescriptorSetUpdateEntry},
     frame::FramesInFlight,
     gpu::pick_gpu,
     image::Image,
+    pipeline::{ComputePipeline, PipelineLayout},
     queues::{QueueFamilies, Queues},
+    shader::Shader,
     surface::Surface,
     swapchain::Swapchain,
 };
@@ -27,10 +30,13 @@ use self::{
 
 mod debug;
 mod delete_queue;
+mod descriptor;
 mod frame;
 mod gpu;
 mod image;
+mod pipeline;
 mod queues;
+mod shader;
 mod surface;
 mod swapchain;
 
@@ -53,6 +59,13 @@ pub struct Graphics {
 
     frames: FramesInFlight,
 
+    descriptor_pool: DescriptorPool,
+
+    descriptor_set_layout: DescriptorSetLayout,
+    descriptor_set: DescriptorSet,
+    pipeline_layout: PipelineLayout,
+    pipeline: ComputePipeline,
+
     render_target: Image,
     render_target_delete_queue: DeleteQueue,
 
@@ -68,7 +81,9 @@ impl Graphics {
             width: size.width,
             height: size.height,
         };
+
         let mut global_delete_queue = DeleteQueue::new();
+        let mut init_delete_queue = DeleteQueue::new();
 
         let entry = ash::Entry::linked();
 
@@ -107,6 +122,34 @@ impl Graphics {
             extent,
         )?;
 
+        let descriptor_pool = DescriptorPool::builder()
+            .add_type_allocation(vk::DescriptorType::STORAGE_IMAGE, 10)
+            .max_sets(10)
+            .build(&device, &mut global_delete_queue)?;
+
+        let descriptor_set_layout = DescriptorSetLayout::builder()
+            .add_binding(
+                0,
+                vk::DescriptorType::STORAGE_IMAGE,
+                vk::ShaderStageFlags::COMPUTE,
+            )
+            .build(&device, &mut global_delete_queue)?;
+
+        let mut descriptor_set = descriptor_pool.alloc(&device, &descriptor_set_layout)?;
+
+        descriptor_set
+            .update(&device)
+            .write(0, DescriptorSetUpdateEntry::storage_image(&render_target));
+
+        let pipeline_layout =
+            PipelineLayout::new(&device, &mut global_delete_queue, &descriptor_set_layout)?;
+
+        let shader = Shader::new(&device, &mut init_delete_queue, Shader::DEFAULT_COMP)?;
+        let pipeline =
+            ComputePipeline::new(&device, &mut global_delete_queue, &pipeline_layout, &shader)?;
+
+        init_delete_queue.flush(&device, &mut allocator);
+
         Ok(Self {
             entry,
             instance,
@@ -123,6 +166,13 @@ impl Graphics {
             allocator,
 
             frames,
+
+            descriptor_pool,
+
+            descriptor_set_layout,
+            descriptor_set,
+            pipeline_layout,
+            pipeline,
 
             render_target,
             render_target_delete_queue,
@@ -205,19 +255,41 @@ impl Graphics {
             tracing::info!("average FPS={per_second:.1}");
         }
 
-        let t = self.boot_time.elapsed().as_secs_f32().sin() * 0.5 + 0.5;
-        tracing::trace!("t={t}");
-        let clear_color = vk::ClearColorValue {
-            float32: [t, t, t, 1.0],
-        };
+        // let t = self.boot_time.elapsed().as_secs_f32().sin() * 0.5 + 0.5;
+        // tracing::trace!("t={t}");
+        // let clear_color = vk::ClearColorValue {
+        //     float32: [t, t, t, 1.0],
+        // };
 
         unsafe {
-            self.device.cmd_clear_color_image(
+            // self.device.cmd_clear_color_image(
+            //     cbuf,
+            //     self.render_target.image,
+            //     vk::ImageLayout::GENERAL,
+            //     &clear_color,
+            //     &[Self::subresource_range(vk::ImageAspectFlags::COLOR)],
+            // );
+
+            self.device.cmd_bind_pipeline(
                 cbuf,
-                self.render_target.image,
-                vk::ImageLayout::GENERAL,
-                &clear_color,
-                &[Self::subresource_range(vk::ImageAspectFlags::COLOR)],
+                vk::PipelineBindPoint::COMPUTE,
+                self.pipeline.pipeline,
+            );
+
+            self.device.cmd_bind_descriptor_sets(
+                cbuf,
+                vk::PipelineBindPoint::COMPUTE,
+                self.pipeline_layout.layout,
+                0,
+                &[self.descriptor_set.set],
+                &[],
+            );
+
+            self.device.cmd_dispatch(
+                cbuf,
+                self.render_target.extent.width.div_ceil(16),
+                self.render_target.extent.height.div_ceil(16),
+                1,
             );
         }
     }
@@ -254,6 +326,10 @@ impl Graphics {
                 height: surface_ext.height.next_multiple_of(RENDER_TARGET_MULTIPLES),
             },
         )?;
+        self.descriptor_set.update(&self.device).write(
+            0,
+            DescriptorSetUpdateEntry::storage_image(&self.render_target),
+        );
 
         Ok(())
     }
