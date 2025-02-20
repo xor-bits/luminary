@@ -7,6 +7,8 @@ edition = "2024"
 ash = { version = "0.38.0", features = ["linked"] }
 ash-window = "0.13.0"
 gpu-allocator = "0.27.0"
+glam = "0.30.0"
+bytemuck = { version = "1.21.0" }
 color-eyre = "0.6.3"
 eyre = "0.6.12"
 tracing = "0.1.41"

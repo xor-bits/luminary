@@ -7,6 +7,7 @@ use std::{
 
 use ash::{Device, Entry, Instance, ext, vk};
 use eyre::Result;
+use glam::UVec3;
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use winit::{raw_window_handle::HasDisplayHandle, window::Window};
 
@@ -15,7 +16,10 @@ use crate::counter::Counter;
 use self::{
     debug::DebugUtils,
     delete_queue::DeleteQueue,
-    descriptor::{DescriptorPool, DescriptorSet, DescriptorSetLayout, DescriptorSetUpdateEntry},
+    descriptor::{
+        DescriptorPool, DescriptorSet, DescriptorSetLayout,
+        DescriptorSetUpdateEntry,
+    },
     frame::FramesInFlight,
     gpu::pick_gpu,
     image::Image,
@@ -110,9 +114,14 @@ impl Graphics {
             window,
         )?;
 
-        let mut allocator = ManuallyDrop::new(Self::create_allocator(&instance, gpu, &device)?);
+        let mut allocator =
+            ManuallyDrop::new(Self::create_allocator(&instance, gpu, &device)?);
 
-        let frames = FramesInFlight::new(&device, &queue_families, &mut global_delete_queue)?;
+        let frames = FramesInFlight::new(
+            &device,
+            &queue_families,
+            &mut global_delete_queue,
+        )?;
 
         let mut render_target_delete_queue = DeleteQueue::new();
         let render_target = Self::create_render_image(
@@ -135,18 +144,27 @@ impl Graphics {
             )
             .build(&device, &mut global_delete_queue)?;
 
-        let mut descriptor_set = descriptor_pool.alloc(&device, &descriptor_set_layout)?;
+        let mut descriptor_set =
+            descriptor_pool.alloc(&device, &descriptor_set_layout)?;
 
         descriptor_set
             .update(&device)
             .write(0, DescriptorSetUpdateEntry::storage_image(&render_target));
 
-        let pipeline_layout =
-            PipelineLayout::new(&device, &mut global_delete_queue, &descriptor_set_layout)?;
+        let pipeline_layout = PipelineLayout::new(
+            &device,
+            &mut global_delete_queue,
+            &descriptor_set_layout,
+        )?;
 
-        let shader = Shader::new(&device, &mut init_delete_queue, Shader::DEFAULT_COMP)?;
-        let pipeline =
-            ComputePipeline::new(&device, &mut global_delete_queue, &pipeline_layout, &shader)?;
+        let shader =
+            Shader::new(&device, &mut init_delete_queue, Shader::DEFAULT_COMP)?;
+        let pipeline = ComputePipeline::new(
+            &device,
+            &mut global_delete_queue,
+            pipeline_layout,
+            &shader,
+        )?;
 
         init_delete_queue.flush(&device, &mut allocator);
 
@@ -187,9 +205,11 @@ impl Graphics {
         let (frame, frame_i) = self.frames.next();
         frame.wait(&self.device, &mut self.allocator)?;
 
-        let swapchain_image =
-            self.swapchain
-                .acquire(&self.device, frame.swapchain_sema, &self.queue_families)?;
+        let swapchain_image = self.swapchain.acquire(
+            &self.device,
+            frame.swapchain_sema,
+            &self.queue_families,
+        )?;
 
         frame.begin(&self.device)?;
 
@@ -244,8 +264,11 @@ impl Graphics {
         frame.end(&self.device)?;
         frame.submit(&self.device, self.queues.graphics)?;
 
-        self.swapchain
-            .present(swapchain_image, self.queues.present, frame.render_sema)?;
+        self.swapchain.present(
+            swapchain_image,
+            self.queues.present,
+            frame.render_sema,
+        )?;
 
         Ok(())
     }
@@ -261,37 +284,34 @@ impl Graphics {
         //     float32: [t, t, t, 1.0],
         // };
 
-        unsafe {
-            // self.device.cmd_clear_color_image(
-            //     cbuf,
-            //     self.render_target.image,
-            //     vk::ImageLayout::GENERAL,
-            //     &clear_color,
-            //     &[Self::subresource_range(vk::ImageAspectFlags::COLOR)],
-            // );
+        // unsafe {
+        //     self.device.cmd_clear_color_image(
+        //         cbuf,
+        //         self.render_target.image,
+        //         vk::ImageLayout::GENERAL,
+        //         &clear_color,
+        //         &[Self::subresource_range(vk::ImageAspectFlags::COLOR)],
+        //     );
+        // }
 
-            self.device.cmd_bind_pipeline(
-                cbuf,
-                vk::PipelineBindPoint::COMPUTE,
-                self.pipeline.pipeline,
-            );
+        self.pipeline.bind(&self.device, cbuf);
 
-            self.device.cmd_bind_descriptor_sets(
-                cbuf,
-                vk::PipelineBindPoint::COMPUTE,
-                self.pipeline_layout.layout,
-                0,
-                &[self.descriptor_set.set],
-                &[],
-            );
+        self.pipeline.bind_sets(
+            &self.device,
+            cbuf,
+            &[self.descriptor_set.set],
+            &[],
+        );
 
-            self.device.cmd_dispatch(
-                cbuf,
+        self.pipeline.dispatch(
+            &self.device,
+            cbuf,
+            UVec3::new(
                 self.render_target.extent.width.div_ceil(16),
                 self.render_target.extent.height.div_ceil(16),
                 1,
-            );
-        }
+            ),
+        );
     }
 
     pub fn resize(&mut self) -> Result<()> {
@@ -306,8 +326,10 @@ impl Graphics {
         const RENDER_TARGET_MULTIPLES: u32 = 256;
         if target_ext.width >= surface_ext.width
             && target_ext.height >= surface_ext.height
-            && target_ext.width.abs_diff(surface_ext.width) <= RENDER_TARGET_MULTIPLES
-            && target_ext.width.abs_diff(surface_ext.width) <= RENDER_TARGET_MULTIPLES
+            && target_ext.width.abs_diff(surface_ext.width)
+                <= RENDER_TARGET_MULTIPLES
+            && target_ext.width.abs_diff(surface_ext.width)
+                <= RENDER_TARGET_MULTIPLES
         {
             return Ok(());
         }
@@ -322,8 +344,12 @@ impl Graphics {
             &mut self.allocator,
             &mut self.render_target_delete_queue,
             vk::Extent2D {
-                width: surface_ext.width.next_multiple_of(RENDER_TARGET_MULTIPLES),
-                height: surface_ext.height.next_multiple_of(RENDER_TARGET_MULTIPLES),
+                width: surface_ext
+                    .width
+                    .next_multiple_of(RENDER_TARGET_MULTIPLES),
+                height: surface_ext
+                    .height
+                    .next_multiple_of(RENDER_TARGET_MULTIPLES),
             },
         )?;
         self.descriptor_set.update(&self.device).write(
@@ -360,9 +386,10 @@ impl Graphics {
         };
         tracing::debug!("enabled layers: {validation_layer_found} {layers:?}");
 
-        let mut extensions = ash_window::enumerate_required_extensions(window_handle)
-            .unwrap()
-            .to_vec();
+        let mut extensions =
+            ash_window::enumerate_required_extensions(window_handle)
+                .unwrap()
+                .to_vec();
         extensions.push(ext::debug_utils::NAME.as_ptr());
 
         let app_info = vk::ApplicationInfo::default()
@@ -401,7 +428,8 @@ impl Graphics {
             .enabled_extension_names(&gpu::REQUIRED_EXTS_PTRPTR)
             .queue_create_infos(&queue_families.families);
 
-        let device = unsafe { instance.create_device(gpu, &create_info, None)? };
+        let device =
+            unsafe { instance.create_device(gpu, &create_info, None)? };
         Ok(device)
     }
 
@@ -447,7 +475,8 @@ impl Graphics {
         from: vk::ImageLayout,
         to: vk::ImageLayout,
     ) {
-        let aspect = if to == vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL {
+        let aspect = if to == vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+        {
             vk::ImageAspectFlags::DEPTH
         } else {
             vk::ImageAspectFlags::COLOR
@@ -459,7 +488,9 @@ impl Graphics {
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
             // the new layout is read+write render target
             .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ)
+            .dst_access_mask(
+                vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ,
+            )
             .old_layout(from)
             .new_layout(to)
             .src_queue_family_index(0)
@@ -467,8 +498,8 @@ impl Graphics {
             .subresource_range(Self::subresource_range(aspect))
             .image(image);
 
-        let dependency_info =
-            vk::DependencyInfo::default().image_memory_barriers(slice::from_ref(&image_barrier));
+        let dependency_info = vk::DependencyInfo::default()
+            .image_memory_barriers(slice::from_ref(&image_barrier));
 
         unsafe { device.cmd_pipeline_barrier2(cbuf, &dependency_info) };
     }
@@ -522,7 +553,9 @@ impl Graphics {
         unsafe { device.cmd_blit_image2(cbuf, &blit_info) };
     }
 
-    fn subresource_range(aspect: vk::ImageAspectFlags) -> vk::ImageSubresourceRange {
+    fn subresource_range(
+        aspect: vk::ImageAspectFlags,
+    ) -> vk::ImageSubresourceRange {
         vk::ImageSubresourceRange::default()
             .aspect_mask(aspect)
             .base_mip_level(0)
