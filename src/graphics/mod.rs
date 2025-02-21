@@ -1,7 +1,7 @@
 use core::slice;
 use std::{
     mem::ManuallyDrop,
-    sync::Arc,
+    sync::{Arc, LazyLock},
     time::{Duration, Instant},
 };
 
@@ -23,36 +23,42 @@ use self::{
     frame::FramesInFlight,
     gpu::pick_gpu,
     image::Image,
+    immediate::Immediate,
     pipeline::{ComputePipeline, PipelineLayout},
     queues::{QueueFamilies, Queues},
     shader::Shader,
     surface::Surface,
     swapchain::Swapchain,
+    world::voxels::VoxelStructure,
 };
 
 //
 
+mod buffer;
 mod debug;
 mod delete_queue;
 mod descriptor;
 mod frame;
 mod gpu;
 mod image;
+mod immediate;
 mod pipeline;
 mod queues;
 mod shader;
 mod surface;
 mod swapchain;
 
+pub mod world;
+
 //
 
 pub struct Graphics {
-    entry: Entry,
+    // entry: Entry,
     instance: Instance,
     debug_utils: DebugUtils,
     surface: Surface,
 
-    gpu: vk::PhysicalDevice,
+    // gpu: vk::PhysicalDevice,
     queue_families: QueueFamilies,
 
     device: Device,
@@ -63,6 +69,8 @@ pub struct Graphics {
 
     frames: FramesInFlight,
 
+    immediate: Immediate,
+
     descriptor_pool: DescriptorPool,
 
     descriptor_set_layout: DescriptorSetLayout,
@@ -72,6 +80,8 @@ pub struct Graphics {
 
     render_target: Image,
     render_target_delete_queue: DeleteQueue,
+
+    voxels: VoxelStructure,
 
     global_delete_queue: DeleteQueue,
     boot_time: Instant,
@@ -123,6 +133,9 @@ impl Graphics {
             &mut global_delete_queue,
         )?;
 
+        let immediate =
+            Immediate::new(&device, queues.transfer, queue_families.transfer)?;
+
         let mut render_target_delete_queue = DeleteQueue::new();
         let render_target = Self::create_render_image(
             &device,
@@ -131,8 +144,16 @@ impl Graphics {
             extent,
         )?;
 
+        let voxels = VoxelStructure::new(
+            &device,
+            &immediate,
+            &mut allocator,
+            &mut global_delete_queue,
+        )?;
+
         let descriptor_pool = DescriptorPool::builder()
             .add_type_allocation(vk::DescriptorType::STORAGE_IMAGE, 10)
+            .add_type_allocation(vk::DescriptorType::STORAGE_BUFFER, 10)
             .max_sets(10)
             .build(&device, &mut global_delete_queue)?;
 
@@ -142,6 +163,11 @@ impl Graphics {
                 vk::DescriptorType::STORAGE_IMAGE,
                 vk::ShaderStageFlags::COMPUTE,
             )
+            .add_binding(
+                1,
+                vk::DescriptorType::STORAGE_BUFFER,
+                vk::ShaderStageFlags::COMPUTE,
+            )
             .build(&device, &mut global_delete_queue)?;
 
         let mut descriptor_set =
@@ -149,7 +175,8 @@ impl Graphics {
 
         descriptor_set
             .update(&device)
-            .write(0, DescriptorSetUpdateEntry::storage_image(&render_target));
+            .write(0, DescriptorSetUpdateEntry::storage_image(&render_target))
+            .write(1, DescriptorSetUpdateEntry::storage_buffer(&voxels.buffer));
 
         let pipeline_layout = PipelineLayout::new(
             &device,
@@ -169,12 +196,12 @@ impl Graphics {
         init_delete_queue.flush(&device, &mut allocator);
 
         Ok(Self {
-            entry,
+            // entry,
             instance,
             debug_utils,
             surface,
 
-            gpu,
+            // gpu,
             queue_families,
 
             device,
@@ -185,6 +212,8 @@ impl Graphics {
 
             frames,
 
+            immediate,
+
             descriptor_pool,
 
             descriptor_set_layout,
@@ -194,6 +223,8 @@ impl Graphics {
 
             render_target,
             render_target_delete_queue,
+
+            voxels,
 
             global_delete_queue,
             boot_time: Instant::now(),
@@ -420,7 +451,8 @@ impl Graphics {
         let mut features12 = vk::PhysicalDeviceVulkan12Features::default()
             .buffer_device_address(true)
             .buffer_device_address_capture_replay(true)
-            .descriptor_indexing(true);
+            .descriptor_indexing(true)
+            .uniform_and_storage_buffer8_bit_access(true);
 
         let create_info = vk::DeviceCreateInfo::default()
             .push_next(&mut features13)
@@ -573,6 +605,8 @@ impl Drop for Graphics {
             .flush(&self.device, &mut self.allocator);
         self.global_delete_queue
             .flush(&self.device, &mut self.allocator);
+
+        self.immediate.destroy(&self.device);
 
         unsafe { ManuallyDrop::drop(&mut self.allocator) };
         self.swapchain.destroy();

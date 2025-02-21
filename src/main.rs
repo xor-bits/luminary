@@ -19,6 +19,7 @@ use self::graphics::Graphics;
 
 mod counter;
 mod graphics;
+mod renderer;
 
 //
 
@@ -39,18 +40,26 @@ impl ApplicationHandler for App {
                 .create_window(
                     Window::default_attributes()
                         .with_title("luminar")
-                        .with_inner_size(PhysicalSize::<u32>::from((64u32, 64u32))),
+                        .with_inner_size(PhysicalSize::<u32>::from((
+                            64u32, 64u32,
+                        ))),
                 )
                 .unwrap()
                 .into();
 
-            let graphics = Graphics::new(window.clone()).expect("failed to initialize graphics");
+            let graphics = Graphics::new(window.clone())
+                .expect("failed to initialize graphics");
 
             AppInner { window, graphics }
         });
     }
 
-    fn window_event(&mut self, el: &ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
+    fn window_event(
+        &mut self,
+        el: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
         let Some(inner) = self.inner.as_mut() else {
             return;
         };

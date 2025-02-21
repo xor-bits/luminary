@@ -63,6 +63,7 @@ pub enum DeletionEntry {
     CommandPool(vk::CommandPool),
     Image(vk::Image),
     ImageView(vk::ImageView),
+    Buffer(vk::Buffer),
     Allocation(Allocation),
     ShaderModule(vk::ShaderModule),
     DescriptorPool(vk::DescriptorPool),
@@ -94,6 +95,10 @@ impl DeletionEntry {
                 tracing::debug!("deleting image view");
                 device.destroy_image_view(image_view, None);
             },
+            DeletionEntry::Buffer(buffer) => unsafe {
+                tracing::debug!("deleting buffer");
+                device.destroy_buffer(buffer, None);
+            },
             DeletionEntry::Allocation(allocation) => {
                 tracing::debug!("deleting allocation");
                 alloc.free(allocation)?;
@@ -108,7 +113,8 @@ impl DeletionEntry {
             },
             DeletionEntry::DescriptorSetLayout(descriptor_set_layout) => unsafe {
                 tracing::debug!("deleting descriptor set layout");
-                device.destroy_descriptor_set_layout(descriptor_set_layout, None);
+                device
+                    .destroy_descriptor_set_layout(descriptor_set_layout, None);
             },
             DeletionEntry::Pipeline(pipeline) => unsafe {
                 tracing::debug!("deleting pipeline");
@@ -141,6 +147,6 @@ macro_rules! impl_from {
 }
 
 impl_from! {
-    Semaphore, Fence, CommandPool, Image, ImageView, ShaderModule,
-    DescriptorPool, DescriptorSetLayout, Pipeline, PipelineLayout,
+    Semaphore, Fence, CommandPool, Image, ImageView, Buffer,
+    ShaderModule, DescriptorPool, DescriptorSetLayout, Pipeline, PipelineLayout,
 }

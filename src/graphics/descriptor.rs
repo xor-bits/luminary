@@ -3,7 +3,7 @@ use std::{mem, slice};
 use ash::{Device, vk};
 use eyre::Result;
 
-use super::{delete_queue::DeleteQueue, image::Image};
+use super::{buffer::Buffer, delete_queue::DeleteQueue, image::Image};
 
 //
 
@@ -12,7 +12,10 @@ pub struct DescriptorSet {
 }
 
 impl DescriptorSet {
-    pub fn update<'a>(&'a mut self, device: &'a Device) -> DescriptorSetUpdate<'a> {
+    pub fn update<'a>(
+        &'a mut self,
+        device: &'a Device,
+    ) -> DescriptorSetUpdate<'a> {
         DescriptorSetUpdate {
             device,
             entries: Vec::new(),
@@ -36,7 +39,11 @@ pub struct DescriptorSetUpdate<'a> {
 }
 
 impl DescriptorSetUpdate<'_> {
-    pub fn write(&mut self, binding: u32, entry: DescriptorSetUpdateEntry) -> &mut Self {
+    pub fn write(
+        &mut self,
+        binding: u32,
+        entry: DescriptorSetUpdateEntry,
+    ) -> &mut Self {
         self.entries.push((binding, entry));
         self
     }
@@ -66,6 +73,7 @@ impl Drop for DescriptorSetUpdate<'_> {
 
 pub enum DescriptorSetUpdateEntry {
     StorageImage(vk::DescriptorImageInfo),
+    StorageBuffer(vk::DescriptorBufferInfo),
 }
 
 impl DescriptorSetUpdateEntry {
@@ -77,11 +85,25 @@ impl DescriptorSetUpdateEntry {
         })
     }
 
-    fn fill<'a>(&'a self, info: vk::WriteDescriptorSet<'a>) -> vk::WriteDescriptorSet<'a> {
+    pub fn storage_buffer(buffer: &Buffer) -> Self {
+        Self::StorageBuffer(vk::DescriptorBufferInfo {
+            buffer: buffer.buffer,
+            offset: 0,
+            range: buffer.size,
+        })
+    }
+
+    fn fill<'a>(
+        &'a self,
+        info: vk::WriteDescriptorSet<'a>,
+    ) -> vk::WriteDescriptorSet<'a> {
         match self {
             DescriptorSetUpdateEntry::StorageImage(image_info) => info
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .image_info(slice::from_ref(image_info)),
+            DescriptorSetUpdateEntry::StorageBuffer(buffer_info) => info
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(slice::from_ref(buffer_info)),
         }
     }
 }
@@ -128,8 +150,10 @@ impl DescriptorSetLayoutBuilder<'_> {
         device: &Device,
         delete_queue: &mut DeleteQueue,
     ) -> Result<DescriptorSetLayout> {
-        let create_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&self.bindings);
-        let layout = unsafe { device.create_descriptor_set_layout(&create_info, None)? };
+        let create_info = vk::DescriptorSetLayoutCreateInfo::default()
+            .bindings(&self.bindings);
+        let layout =
+            unsafe { device.create_descriptor_set_layout(&create_info, None)? };
         delete_queue.push(layout);
         Ok(DescriptorSetLayout { layout })
     }
@@ -150,11 +174,20 @@ impl DescriptorPool {
     }
 
     pub fn reset(&self, device: &Device) -> Result<()> {
-        unsafe { device.reset_descriptor_pool(self.pool, vk::DescriptorPoolResetFlags::empty())? };
+        unsafe {
+            device.reset_descriptor_pool(
+                self.pool,
+                vk::DescriptorPoolResetFlags::empty(),
+            )?
+        };
         Ok(())
     }
 
-    pub fn alloc(&self, device: &Device, layout: &DescriptorSetLayout) -> Result<DescriptorSet> {
+    pub fn alloc(
+        &self,
+        device: &Device,
+        layout: &DescriptorSetLayout,
+    ) -> Result<DescriptorSet> {
         let allocate_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(self.pool)
             .set_layouts(slice::from_ref(&layout.layout));
@@ -180,7 +213,11 @@ pub struct DescriptorPoolBuilder {
 }
 
 impl DescriptorPoolBuilder {
-    pub fn add_type_allocation(mut self, ty: vk::DescriptorType, max_count: u32) -> Self {
+    pub fn add_type_allocation(
+        mut self,
+        ty: vk::DescriptorType,
+        max_count: u32,
+    ) -> Self {
         self.sizes.push(vk::DescriptorPoolSize {
             ty,
             descriptor_count: max_count,
@@ -193,12 +230,17 @@ impl DescriptorPoolBuilder {
         self
     }
 
-    pub fn build(&self, device: &Device, delete_queue: &mut DeleteQueue) -> Result<DescriptorPool> {
+    pub fn build(
+        &self,
+        device: &Device,
+        delete_queue: &mut DeleteQueue,
+    ) -> Result<DescriptorPool> {
         let create_info = vk::DescriptorPoolCreateInfo::default()
             .pool_sizes(&self.sizes)
             .max_sets(self.max_sets)
             .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET);
-        let pool = unsafe { device.create_descriptor_pool(&create_info, None)? };
+        let pool =
+            unsafe { device.create_descriptor_pool(&create_info, None)? };
         delete_queue.push(pool);
         Ok(DescriptorPool { pool })
     }

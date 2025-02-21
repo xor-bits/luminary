@@ -9,6 +9,7 @@ use super::{delete_queue::DeleteQueue, queues::QueueFamilies};
 //
 
 pub struct FramesInFlight {
+
     frame: usize,
     frames: [FrameInFlight; 2],
 }
