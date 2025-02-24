@@ -20,7 +20,7 @@ impl Flycam {
     pub fn movement(&mut self, delta: Vec3) {
         self.position += Mat3::from_rotation_y(self.yaw) * delta;
 
-        tracing::info!("pos={}", self.position);
+        // tracing::info!("pos={}", self.position);
     }
 
     pub fn mouse_delta(&mut self, delta: Vec2) {
@@ -33,7 +33,7 @@ impl Flycam {
         );
 
         // tracing::info!("yaw={} pitch={}", self.yaw, self.pitch);
-        tracing::info!("looking_to={}", self.looking_to());
+        // tracing::info!("looking_to={}", self.looking_to());
     }
 
     /// view matrix

@@ -58,7 +58,7 @@ void main() {
     vec3 ray_dist = abs(ray_dir_inv);
     vec3 next_dist = (ray_sign * (ray_origin_grid - ray_origin.xyz) + (ray_sign * 0.5) + 0.5) * ray_dist;
 
-    bvec3 mask = bvec3(false);
+    bvec3 mask;
     uint hit_depth = 0;
     for (; hit_depth < 100; hit_depth ++) {
         uint voxel_col = get_voxel(world_pos);
