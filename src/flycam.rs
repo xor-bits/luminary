@@ -1,4 +1,4 @@
-use glam::{Mat4, Vec2, Vec3};
+use glam::{Mat3, Mat4, Vec2, Vec3};
 
 //
 
@@ -18,13 +18,13 @@ impl Flycam {
     }
 
     pub fn movement(&mut self, delta: Vec3) {
-        self.position += delta;
+        self.position += Mat3::from_rotation_y(self.yaw) * delta;
 
         tracing::info!("pos={}", self.position);
     }
 
     pub fn mouse_delta(&mut self, delta: Vec2) {
-        self.yaw += delta.x * 0.001;
+        self.yaw -= delta.x * 0.001;
         self.pitch += delta.y * 0.001;
 
         self.pitch = self.pitch.clamp(
@@ -40,7 +40,7 @@ impl Flycam {
     pub fn view_matrix(&self) -> Mat4 {
         let eye = self.position;
         let dir = self.looking_to();
-        Mat4::look_to_lh(eye, dir, Vec3::NEG_Y)
+        Mat4::look_to_rh(eye, dir, Vec3::NEG_Y)
     }
 
     pub fn looking_to(&self) -> Vec3 {

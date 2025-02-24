@@ -335,7 +335,7 @@ impl Graphics {
             &[],
         );
 
-        let projection_view = Mat4::perspective_lh(
+        let projection_view = Mat4::perspective_rh(
             90.0f32.to_radians(),
             self.swapchain.extent.width as f32
                 / self.swapchain.extent.height as f32,

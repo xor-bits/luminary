@@ -8,10 +8,11 @@
     maybe_uninit_slice
 )]
 
-use std::sync::Arc;
+use std::{default, sync::Arc, time::Instant};
 
 use eyre::Result;
 use glam::{Vec2, Vec3};
+use rustc_hash::{FxHashMap, FxHashSet};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
@@ -41,6 +42,76 @@ struct AppInner {
     window: Arc<Window>,
     graphics: Graphics,
     eye: flycam::Flycam,
+    dt: Instant,
+
+    just_pressed: FxHashSet<KeyCode>,
+    just_released: FxHashSet<KeyCode>,
+    pressed: FxHashSet<KeyCode>,
+}
+
+impl AppInner {
+    pub fn render(&mut self) {
+        self.update();
+
+        self.graphics
+            .draw(self.eye.view_matrix())
+            .expect("failed to draw");
+    }
+
+    pub fn update(&mut self) {
+        let delta_seconds = self.dt.elapsed().as_secs_f32();
+        self.dt = Instant::now();
+
+        let mut delta = Vec3::ZERO;
+        if self.pressed.contains(&KeyCode::KeyA) {
+            delta.x -= 1.0;
+        }
+        if self.pressed.contains(&KeyCode::KeyD) {
+            delta.x += 1.0;
+        }
+        if self.pressed.contains(&KeyCode::KeyS) {
+            delta.z -= 1.0;
+        }
+        if self.pressed.contains(&KeyCode::KeyW) {
+            delta.z += 1.0;
+        }
+        if self.pressed.contains(&KeyCode::ShiftLeft) {
+            delta.y -= 1.0;
+        }
+        if self.pressed.contains(&KeyCode::Space) {
+            delta.y += 1.0;
+        }
+        self.eye.movement(delta * delta_seconds * 10.0);
+
+        self.just_pressed.clear();
+        self.just_released.clear();
+    }
+
+    pub fn ev(&mut self, ev: &WindowEvent) {
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    physical_key: PhysicalKey::Code(code),
+                    state,
+                    ..
+                },
+            ..
+        } = ev
+        else {
+            return;
+        };
+
+        match state {
+            ElementState::Pressed => {
+                self.just_pressed.insert(*code);
+                self.pressed.insert(*code);
+            }
+            ElementState::Released => {
+                self.just_released.insert(*code);
+                self.pressed.remove(code);
+            }
+        }
+    }
 }
 
 impl ApplicationHandler for App {
@@ -68,6 +139,11 @@ impl ApplicationHandler for App {
                 window,
                 graphics,
                 eye,
+                dt: Instant::now(),
+
+                just_pressed: <_>::default(),
+                just_released: <_>::default(),
+                pressed: <_>::default(),
             }
         });
     }
@@ -81,6 +157,8 @@ impl ApplicationHandler for App {
         let Some(inner) = self.inner.as_mut() else {
             return;
         };
+
+        inner.ev(&event);
 
         match event {
             WindowEvent::KeyboardInput {
@@ -96,99 +174,8 @@ impl ApplicationHandler for App {
                 println!("closing");
                 el.exit();
             }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        physical_key: PhysicalKey::Code(KeyCode::KeyA),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => {
-                inner.eye.movement(Vec3::new(-1.0, 0.0, 0.0));
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        physical_key: PhysicalKey::Code(KeyCode::KeyD),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => {
-                inner.eye.movement(Vec3::new(1.0, 0.0, 0.0));
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        physical_key: PhysicalKey::Code(KeyCode::KeyW),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => {
-                inner.eye.movement(Vec3::new(0.0, 0.0, 1.0));
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        physical_key: PhysicalKey::Code(KeyCode::KeyS),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => {
-                inner.eye.movement(Vec3::new(0.0, 0.0, -1.0));
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        physical_key: PhysicalKey::Code(KeyCode::ArrowLeft),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => {
-                inner.eye.mouse_delta(Vec2::new(-20.0, 0.0));
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        physical_key: PhysicalKey::Code(KeyCode::ArrowRight),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => {
-                inner.eye.mouse_delta(Vec2::new(20.0, 0.0));
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        physical_key: PhysicalKey::Code(KeyCode::ArrowUp),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => {
-                inner.eye.mouse_delta(Vec2::new(0.0, 20.0));
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        physical_key: PhysicalKey::Code(KeyCode::ArrowDown),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => {
-                inner.eye.mouse_delta(Vec2::new(0.0, -20.0));
-            }
             WindowEvent::RedrawRequested => {
-                inner
-                    .graphics
-                    .draw(inner.eye.view_matrix())
-                    .expect("failed to draw");
+                inner.render();
             }
             WindowEvent::Resized(size) => {
                 inner.graphics.resize().expect("failed to resize");
@@ -219,10 +206,7 @@ impl ApplicationHandler for App {
         let Some(inner) = self.inner.as_mut() else {
             return;
         };
-        inner
-            .graphics
-            .draw(inner.eye.view_matrix())
-            .expect("failed to draw");
+        inner.render();
     }
 }
 
