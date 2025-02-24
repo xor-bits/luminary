@@ -37,7 +37,7 @@ impl VoxelStructure {
             let is_ball = (x.abs_diff(16).pow(2)
                 + y.abs_diff(16).pow(2)
                 + z.abs_diff(16).pow(2))
-                <= 99;
+                <= 120;
 
             let is_solid = is_corner || is_ball;
 

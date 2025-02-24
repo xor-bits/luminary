@@ -18,6 +18,21 @@ layout(push_constant) uniform PushConstant {
     mat4x4 projection_view;
 } push;
 
+//
+
+uint get_voxel(ivec3 world_pos) {
+    if (0 <= world_pos.x && world_pos.x < 32 &&
+        0 <= world_pos.y && world_pos.y < 32 &&
+        0 <= world_pos.z && world_pos.z < 32) {
+        uint index = (world_pos.x) | (world_pos.y << 5) | (world_pos.z << 10);
+        uint voxel_col = uint(voxel_storage.voxels[index].col);
+
+        return voxel_col;
+    }
+
+    return 0;
+}
+
 void main() {
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size = imageSize(image);
@@ -33,25 +48,26 @@ void main() {
     ray_origin.xyz /= ray_origin.w;
     ray_target.xyz /= ray_target.w;
 
-    vec3 ray_dir = normalize(ray_target.xyz - ray_origin.xyz);
+    vec3 ray_origin_grid = floor(ray_origin.xyz);
+    ivec3 world_pos = ivec3(ray_origin_grid);
 
-    ivec3 ray_step = ivec3(sign(ray_dir));
+    vec3 ray_dir = normalize(ray_target.xyz - ray_origin.xyz);
+    vec3 ray_dir_inv = 1.0 / ray_dir;
+    ivec3 ray_sign = ivec3(sign(ray_dir));
+    
+    vec3 ray_dist = abs(ray_dir_inv);
+    vec3 next_dist = (ray_sign * (ray_origin_grid - ray_origin.xyz) + (ray_sign * 0.5) + 0.5) * ray_dist;
 
     uint hit_depth = 0;
     for (; hit_depth < 1024; hit_depth ++) {
-        ivec3 world_pos = ivec3(ray_origin.xyz);
-        if (0 <= world_pos.x && world_pos.x < 32 &&
-            0 <= world_pos.y && world_pos.y < 32 &&
-            0 <= world_pos.z && world_pos.z < 32) {
-            uint index = (world_pos.x) | (world_pos.y << 5) | (world_pos.z << 10);
-            uint voxel_col = uint(voxel_storage.voxels[index].col);
-
-            if (voxel_col != 0) {
-                break;
-            }
+        uint voxel_col = get_voxel(world_pos);
+        if (voxel_col != 0) {
+            break;
         }
-   
-        ray_origin.xyz += ray_dir * 0.1;
+
+        bvec3 mask = lessThanEqual(next_dist.xyz, min(next_dist.yzx, next_dist.zxy));
+        next_dist += vec3(mask) * ray_dist;
+        world_pos += ivec3(vec3(mask) * ray_sign);
     }
 
     imageStore(image, coord, vec4(vec3(hit_depth) / vec3(1024.0), 1.0));
