@@ -44,6 +44,8 @@ struct AppInner {
     eye: flycam::Flycam,
     dt: Instant,
 
+    cursor_visible: bool,
+
     just_pressed: FxHashSet<KeyCode>,
     just_released: FxHashSet<KeyCode>,
     pressed: FxHashSet<KeyCode>,
@@ -80,6 +82,9 @@ impl AppInner {
         }
         if self.pressed.contains(&KeyCode::Space) {
             delta.y += 1.0;
+        }
+        if self.pressed.contains(&KeyCode::ControlLeft) {
+            delta *= 0.2;
         }
         self.eye.movement(delta * delta_seconds * 10.0);
 
@@ -128,8 +133,6 @@ impl ApplicationHandler for App {
                 .unwrap()
                 .into();
 
-            window.set_cursor_grab(CursorGrabMode::Confined).unwrap();
-
             let graphics = Graphics::new(window.clone())
                 .expect("failed to initialize graphics");
 
@@ -140,6 +143,8 @@ impl ApplicationHandler for App {
                 graphics,
                 eye,
                 dt: Instant::now(),
+
+                cursor_visible: true,
 
                 just_pressed: <_>::default(),
                 just_released: <_>::default(),
@@ -169,8 +174,19 @@ impl ApplicationHandler for App {
                         ..
                     },
                 ..
+            } => {
+                inner.cursor_visible ^= true;
+                inner
+                    .window
+                    .set_cursor_grab(if inner.cursor_visible {
+                        CursorGrabMode::None
+                    } else {
+                        CursorGrabMode::Confined
+                    })
+                    .unwrap();
+                inner.window.set_cursor_visible(inner.cursor_visible);
             }
-            | WindowEvent::CloseRequested => {
+            WindowEvent::CloseRequested => {
                 println!("closing");
                 el.exit();
             }
@@ -194,6 +210,10 @@ impl ApplicationHandler for App {
         let Some(inner) = self.inner.as_mut() else {
             return;
         };
+
+        if inner.cursor_visible {
+            return;
+        }
 
         if let DeviceEvent::MouseMotion { delta } = event {
             inner

@@ -11,9 +11,9 @@ pub struct Flycam {
 impl Flycam {
     pub const fn new() -> Self {
         Self {
-            position: Vec3::splat(-5.0),
-            yaw: 0.0,
-            pitch: 0.0,
+            position: Vec3::splat(40.0),
+            yaw: std::f32::consts::PI, // - std::f32::consts::FRAC_PI_4,
+            pitch: -std::f32::consts::FRAC_PI_4,
         }
     }
 
