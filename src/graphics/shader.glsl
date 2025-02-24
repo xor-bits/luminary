@@ -42,8 +42,38 @@ struct HitData {
     bool hit;
 };
 
+bool ray_aabb(
+    vec3 ray_origin,
+    vec3 ray_dir,
+    vec3 low,
+    vec3 high,
+    out float t_close_f,
+    out float t_far_f
+) {
+    vec3 t_low = (low - ray_origin) / ray_dir;
+    vec3 t_high = (high - ray_origin) / ray_dir;
+    vec3 t_close = min(t_low, t_high);
+    vec3 t_far = max(t_low, t_high);
+    t_close_f = max(t_close.x, max(t_close.y, t_close.z));
+    t_far_f = min(t_far.x, min(t_far.y, t_far.z));
+
+    return sign(t_far_f) > 0.0 && t_close_f <= t_far_f;
+    // return (sign(t_close_f) > 0.0 && t_close_f <= t_far_f) || (all(lessThanEqual(low, ray_origin)) && all(lessThanEqual(ray_origin, high)));
+}
+
 void ray_cast(vec3 ray_origin, vec3 ray_dir, bool skip_first, out HitData hit_data) {
-    
+    float t_close_f, t_far_f;
+    if (!ray_aabb(ray_origin, ray_dir, vec3(0.0), vec3(32.0), t_close_f, t_far_f)) {
+        hit_data.position = ray_origin;
+        hit_data.hit = false;
+        return;
+    }
+
+    // start DDA from the voxel AABB edge, if it starts outside
+    if (sign(t_close_f) > 0.0) {
+        ray_origin += ray_dir * t_close_f;
+    }
+        
     vec3 ray_origin_grid = floor(ray_origin);
     ivec3 world_pos = ivec3(ray_origin_grid);
 
