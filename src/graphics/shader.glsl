@@ -16,6 +16,7 @@ layout(std430, set = 0, binding = 1) readonly buffer VoxelStorage {
 
 layout(push_constant) uniform PushConstant {
     mat4x4 projection_view;
+    uint mode_flags;
 } push;
 
 //
@@ -70,9 +71,7 @@ void ray_cast(vec3 ray_origin, vec3 ray_dir, bool skip_first, out HitData hit_da
     }
 
     // start DDA from the voxel AABB edge, if it starts outside
-    if (sign(t_close_f) > 0.0) {
-        ray_origin += ray_dir * t_close_f;
-    }
+    ray_origin += ray_dir * max(t_close_f, 0.0);
         
     vec3 ray_origin_grid = floor(ray_origin);
     ivec3 world_pos = ivec3(ray_origin_grid);
@@ -108,6 +107,7 @@ void ray_cast(vec3 ray_origin, vec3 ray_dir, bool skip_first, out HitData hit_da
     hit_data.normal = -vec3(ray_sign) * vec3(mask);
     hit_data.distance = length(vec3(mask) * (next_dist - ray_dist));
     hit_data.position = ray_origin + ray_dir * hit_data.distance;
+    hit_data.distance += max(t_close_f, 0.0);
 }
 
 vec4 palette[] = {
@@ -141,9 +141,6 @@ void main() {
         return;
     }
 
-    // imageStore(image, coord, vec4(vec3(hit_data.distance / 50.0), 1.0));
-    // return;
-
     // shadow cast
     vec3 sun_dir = vec3(0.5, 1.0, 0.75);
     HitData light_hit_data;
@@ -153,6 +150,14 @@ void main() {
     uint voxel_col = get_voxel(hit_data.voxel);
     vec4 col = palette[voxel_col];
     col.xyz *= brightness;
+
+    if ((push.mode_flags & 1) != 0) {
+        col = vec4(vec3(brightness), 1.0);
+    } else if ((push.mode_flags & 2) != 0) {
+        col = vec4(vec3(hit_data.distance / 100.0), 1.0);
+    } else if ((push.mode_flags & 4) != 0) {
+        col = vec4(vec3(hit_data.normal), 1.0);
+    }
     
     imageStore(image, coord, col);
 }

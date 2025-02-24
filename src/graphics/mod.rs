@@ -6,6 +6,7 @@ use std::{
 };
 
 use ash::{Device, Entry, Instance, ext, vk};
+use bytemuck::{Pod, Zeroable};
 use eyre::Result;
 use glam::{Mat4, UVec3, Vec4};
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
@@ -52,6 +53,14 @@ pub mod world;
 
 //
 
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub struct PushConst {
+    pub projection_view: Mat4,
+    pub mode_flags: u32,
+    pub _pad: [u32; 3],
+}
+
 pub struct Graphics {
     // entry: Entry,
     instance: Instance,
@@ -75,8 +84,8 @@ pub struct Graphics {
 
     descriptor_set_layout: DescriptorSetLayout,
     descriptor_set: DescriptorSet,
-    pipeline_layout: PipelineLayout<Mat4>,
-    pipeline: ComputePipeline<Mat4>,
+    pipeline_layout: PipelineLayout<PushConst>,
+    pipeline: ComputePipeline<PushConst>,
 
     render_target: Image,
     render_target_delete_queue: DeleteQueue,
@@ -233,7 +242,7 @@ impl Graphics {
         })
     }
 
-    pub fn draw(&mut self, view_matrix: Mat4) -> Result<()> {
+    pub fn draw(&mut self, push_const: PushConst) -> Result<()> {
         let (frame, frame_i) = self.frames.next();
         frame.wait(&self.device, &mut self.allocator)?;
 
@@ -256,7 +265,7 @@ impl Graphics {
 
         // render everything
         let cbuf = frame.main_cbuf;
-        self.draw_scene(cbuf, view_matrix);
+        self.draw_scene(cbuf, push_const);
 
         let frame = self.frames.get(frame_i);
 
@@ -305,7 +314,11 @@ impl Graphics {
         Ok(())
     }
 
-    pub fn draw_scene(&mut self, cbuf: vk::CommandBuffer, view_matrix: Mat4) {
+    pub fn draw_scene(
+        &mut self,
+        cbuf: vk::CommandBuffer,
+        push_const: PushConst,
+    ) {
         if let Some(per_second) = self.fps.next() {
             tracing::info!("average FPS={per_second:.1}");
         }
@@ -335,17 +348,8 @@ impl Graphics {
             &[],
         );
 
-        let projection_view = Mat4::perspective_rh(
-            90.0f32.to_radians(),
-            self.swapchain.extent.width as f32
-                / self.swapchain.extent.height as f32,
-            0.01,
-            10.0,
-        ) * view_matrix;
-        let projection_view = projection_view.inverse();
-
         self.pipeline
-            .write_push_constant(&self.device, cbuf, &projection_view);
+            .write_push_constant(&self.device, cbuf, &push_const);
 
         self.pipeline.dispatch(
             &self.device,

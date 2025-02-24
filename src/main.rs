@@ -11,7 +11,7 @@
 use std::{default, sync::Arc, time::Instant};
 
 use eyre::Result;
-use glam::{Vec2, Vec3};
+use glam::{Mat4, Vec2, Vec3};
 use rustc_hash::{FxHashMap, FxHashSet};
 use winit::{
     application::ApplicationHandler,
@@ -25,7 +25,7 @@ use winit::{
     window::{CursorGrabMode, Window, WindowId},
 };
 
-use self::graphics::Graphics;
+use self::graphics::{Graphics, PushConst};
 
 //
 
@@ -49,6 +49,7 @@ struct AppInner {
     speed: f32,
 
     cursor_visible: bool,
+    mode_flags: u32,
 
     just_pressed: FxHashSet<KeyCode>,
     just_released: FxHashSet<KeyCode>,
@@ -59,8 +60,22 @@ impl AppInner {
     pub fn render(&mut self) {
         self.update();
 
+        let size = self.window.inner_size().cast::<f32>();
+
+        let projection_view = Mat4::perspective_rh(
+            90.0f32.to_radians(),
+            size.width / size.height,
+            0.01,
+            10.0,
+        ) * self.eye.view_matrix();
+        let projection_view = projection_view.inverse();
+
         self.graphics
-            .draw(self.eye.view_matrix())
+            .draw(PushConst {
+                projection_view,
+                mode_flags: self.mode_flags,
+                _pad: [0; 3],
+            })
             .expect("failed to draw");
     }
 
@@ -91,6 +106,26 @@ impl AppInner {
             delta *= 0.2;
         }
         self.eye.movement(delta * delta_seconds * 10.0 * self.speed);
+
+        if self.just_pressed.contains(&KeyCode::F1) {
+            // normal vision
+            self.mode_flags &= !7;
+        }
+        if self.just_pressed.contains(&KeyCode::F2) {
+            // brightness vision
+            self.mode_flags &= !7;
+            self.mode_flags |= 1;
+        }
+        if self.just_pressed.contains(&KeyCode::F3) {
+            // depth vision
+            self.mode_flags &= !7;
+            self.mode_flags |= 2;
+        }
+        if self.just_pressed.contains(&KeyCode::F4) {
+            // normals vision
+            self.mode_flags &= !7;
+            self.mode_flags |= 4;
+        }
 
         self.just_pressed.clear();
         self.just_released.clear();
@@ -150,6 +185,7 @@ impl ApplicationHandler for App {
                 speed: 1.0,
 
                 cursor_visible: true,
+                mode_flags: 0,
 
                 just_pressed: <_>::default(),
                 just_released: <_>::default(),
