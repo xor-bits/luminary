@@ -1,4 +1,7 @@
-use std::{ffi::CStr, ptr};
+use std::{
+    alloc::Layout, ffi::CStr, intrinsics::const_allocate, mem::MaybeUninit,
+    ptr, slice,
+};
 
 use ash::{Entry, Instance, khr, vk};
 
@@ -155,7 +158,8 @@ fn find_queues(
     gpu: vk::PhysicalDevice,
     surface: vk::SurfaceKHR,
 ) -> Option<QueueFamilies> {
-    let mut queue_families = unsafe { instance.get_physical_device_queue_family_properties(gpu) };
+    let mut queue_families =
+        unsafe { instance.get_physical_device_queue_family_properties(gpu) };
     // use the timestamp_valid_bits field to count the times this queue is used
     for queue_family in queue_families.iter_mut() {
         queue_family.timestamp_valid_bits = 0;
@@ -170,17 +174,29 @@ fn find_queues(
         |_, has_present| has_present,
     )?;
     queue_families[present as usize].timestamp_valid_bits += 1;
-    let graphics = find_queue(surface_loader, gpu, surface, &queue_families, |props, _| {
-        props.queue_flags.contains(vk::QueueFlags::GRAPHICS)
-    })?;
+    let graphics = find_queue(
+        surface_loader,
+        gpu,
+        surface,
+        &queue_families,
+        |props, _| props.queue_flags.contains(vk::QueueFlags::GRAPHICS),
+    )?;
     queue_families[graphics as usize].timestamp_valid_bits += 1;
-    let transfer = find_queue(surface_loader, gpu, surface, &queue_families, |props, _| {
-        props.queue_flags.contains(vk::QueueFlags::TRANSFER)
-    })?;
+    let transfer = find_queue(
+        surface_loader,
+        gpu,
+        surface,
+        &queue_families,
+        |props, _| props.queue_flags.contains(vk::QueueFlags::TRANSFER),
+    )?;
     queue_families[transfer as usize].timestamp_valid_bits += 1;
-    let compute = find_queue(surface_loader, gpu, surface, &queue_families, |props, _| {
-        props.queue_flags.contains(vk::QueueFlags::COMPUTE)
-    })?;
+    let compute = find_queue(
+        surface_loader,
+        gpu,
+        surface,
+        &queue_families,
+        |props, _| props.queue_flags.contains(vk::QueueFlags::COMPUTE),
+    )?;
     queue_families[compute as usize].timestamp_valid_bits += 1;
 
     let mut families: Vec<vk::DeviceQueueCreateInfo<'static>> =
@@ -249,5 +265,32 @@ fn find_queue(
 
 //
 
-pub const REQUIRED_EXTS_CSTR: [&CStr; 1] = [khr::swapchain::NAME];
-pub const REQUIRED_EXTS_PTRPTR: [*const i8; 1] = [khr::swapchain::NAME.as_ptr()];
+pub const REQUIRED_EXTS_CSTR: &[&CStr] = &[
+    khr::swapchain::NAME,
+    khr::acceleration_structure::NAME,
+    khr::ray_tracing_pipeline::NAME,
+    khr::deferred_host_operations::NAME,
+];
+pub const REQUIRED_EXTS_PTRPTR: &[*const i8] = map(REQUIRED_EXTS_CSTR);
+
+const fn map(a: &[&CStr]) -> &'static [*const i8] {
+    let Ok((layout, _)) = Layout::new::<*const i8>().repeat(a.len()) else {
+        panic!("invalid layout for some reason");
+    };
+    let ptr = unsafe { const_allocate(layout.size(), layout.align()) };
+
+    if ptr.is_null() {
+        panic!("cannot run this in non-const context");
+    }
+
+    let slice = ptr::slice_from_raw_parts_mut(ptr.cast(), a.len());
+    let slice = unsafe { slice.as_uninit_slice_mut().unwrap() };
+
+    let mut i = 0;
+    while i < a.len() {
+        slice[i].write(a[i].as_ptr());
+        i += 1;
+    }
+
+    unsafe { MaybeUninit::slice_assume_init_ref(slice) }
+}

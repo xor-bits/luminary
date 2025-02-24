@@ -1,13 +1,21 @@
 #![allow(internal_features)]
-#![feature(core_intrinsics, unsigned_is_multiple_of, const_heap)]
+#![feature(
+    core_intrinsics,
+    unsigned_is_multiple_of,
+    const_heap,
+    alloc_layout_extra,
+    ptr_as_uninit,
+    maybe_uninit_slice
+)]
 
 use std::sync::Arc;
 
 use eyre::Result;
+use glam::Vec2;
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
-    event::{ElementState, KeyEvent, WindowEvent},
+    event::{DeviceEvent, DeviceId, ElementState, KeyEvent, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowId},
@@ -18,6 +26,7 @@ use self::graphics::Graphics;
 //
 
 mod counter;
+mod flycam;
 mod graphics;
 mod renderer;
 
@@ -31,6 +40,7 @@ struct App {
 struct AppInner {
     window: Arc<Window>,
     graphics: Graphics,
+    eye: flycam::Flycam,
 }
 
 impl ApplicationHandler for App {
@@ -50,7 +60,13 @@ impl ApplicationHandler for App {
             let graphics = Graphics::new(window.clone())
                 .expect("failed to initialize graphics");
 
-            AppInner { window, graphics }
+            let eye = flycam::Flycam::new();
+
+            AppInner {
+                window,
+                graphics,
+                eye,
+            }
         });
     }
 
@@ -79,7 +95,10 @@ impl ApplicationHandler for App {
                 el.exit();
             }
             WindowEvent::RedrawRequested => {
-                inner.graphics.draw().expect("failed to draw");
+                inner
+                    .graphics
+                    .draw(inner.eye.view_matrix())
+                    .expect("failed to draw");
             }
             WindowEvent::Resized(size) => {
                 inner.graphics.resize().expect("failed to resize");
@@ -89,11 +108,29 @@ impl ApplicationHandler for App {
         }
     }
 
+    fn device_event(
+        &mut self,
+        _: &ActiveEventLoop,
+        _: DeviceId,
+        event: DeviceEvent,
+    ) {
+        let Some(inner) = self.inner.as_mut() else {
+            return;
+        };
+
+        if let DeviceEvent::MouseMotion { delta } = event {
+            inner.eye.mouse_delta(Vec2::new(delta.0 as _, delta.1 as _));
+        }
+    }
+
     fn about_to_wait(&mut self, _: &ActiveEventLoop) {
         let Some(inner) = self.inner.as_mut() else {
             return;
         };
-        inner.graphics.draw().expect("failed to draw");
+        inner
+            .graphics
+            .draw(inner.eye.view_matrix())
+            .expect("failed to draw");
     }
 }
 

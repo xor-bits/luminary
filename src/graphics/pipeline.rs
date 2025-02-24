@@ -1,6 +1,7 @@
-use std::{marker::PhantomData, slice};
+use std::{marker::PhantomData, mem, slice};
 
 use ash::{Device, vk};
+use bytemuck::{Pod, Zeroable};
 use eyre::Result;
 use glam::UVec3;
 
@@ -22,10 +23,20 @@ impl<C: Sized> PipelineLayout<C> {
         delete_queue: &mut DeleteQueue,
         set_layout: &DescriptorSetLayout,
     ) -> Result<Self> {
-        // let push_constant_size = size_of::<C>();
+        let push_constant_size: u32 = size_of::<C>().try_into()?;
 
-        let create_info = vk::PipelineLayoutCreateInfo::default()
+        let push_constant_range = vk::PushConstantRange::default()
+            .offset(0)
+            .size(push_constant_size)
+            .stage_flags(vk::ShaderStageFlags::COMPUTE); // TODO: specify the stage or something idk
+
+        let mut create_info = vk::PipelineLayoutCreateInfo::default()
             .set_layouts(slice::from_ref(&set_layout.layout));
+
+        if push_constant_size != 0 {
+            create_info = create_info
+                .push_constant_ranges(slice::from_ref(&push_constant_range));
+        }
 
         let layout =
             unsafe { device.create_pipeline_layout(&create_info, None)? };
@@ -45,6 +56,8 @@ pub struct ComputePipeline<C = ()> {
 }
 
 impl<C: Sized> ComputePipeline<C> {
+    const PUSH_CONSTANT_SIZE: u32 = mem::size_of::<C>() as _;
+
     pub fn new(
         device: &Device,
         delete_queue: &mut DeleteQueue,
@@ -80,6 +93,29 @@ impl<C: Sized> ComputePipeline<C> {
                 cbuf,
                 vk::PipelineBindPoint::COMPUTE,
                 self.pipeline,
+            );
+        }
+    }
+
+    pub fn write_push_constant(
+        &self,
+        device: &Device,
+        cbuf: vk::CommandBuffer,
+        data: &C,
+    ) where
+        C: Pod + Zeroable,
+    {
+        if Self::PUSH_CONSTANT_SIZE == 0 {
+            return;
+        }
+
+        unsafe {
+            device.cmd_push_constants(
+                cbuf,
+                self.layout.layout,
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                bytemuck::cast_slice(slice::from_ref(data)),
             );
         }
     }

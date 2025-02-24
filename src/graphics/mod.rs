@@ -7,7 +7,7 @@ use std::{
 
 use ash::{Device, Entry, Instance, ext, vk};
 use eyre::Result;
-use glam::UVec3;
+use glam::{Mat4, UVec3, Vec3};
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use winit::{raw_window_handle::HasDisplayHandle, window::Window};
 
@@ -75,8 +75,8 @@ pub struct Graphics {
 
     descriptor_set_layout: DescriptorSetLayout,
     descriptor_set: DescriptorSet,
-    pipeline_layout: PipelineLayout,
-    pipeline: ComputePipeline,
+    pipeline_layout: PipelineLayout<Mat4>,
+    pipeline: ComputePipeline<Mat4>,
 
     render_target: Image,
     render_target_delete_queue: DeleteQueue,
@@ -145,6 +145,7 @@ impl Graphics {
         )?;
 
         let voxels = VoxelStructure::new(
+            &instance,
             &device,
             &immediate,
             &mut allocator,
@@ -232,7 +233,7 @@ impl Graphics {
         })
     }
 
-    pub fn draw(&mut self) -> Result<()> {
+    pub fn draw(&mut self, view_matrix: Mat4) -> Result<()> {
         let (frame, frame_i) = self.frames.next();
         frame.wait(&self.device, &mut self.allocator)?;
 
@@ -255,7 +256,7 @@ impl Graphics {
 
         // render everything
         let cbuf = frame.main_cbuf;
-        self.draw_scene(cbuf);
+        self.draw_scene(cbuf, view_matrix);
 
         let frame = self.frames.get(frame_i);
 
@@ -304,7 +305,7 @@ impl Graphics {
         Ok(())
     }
 
-    pub fn draw_scene(&mut self, cbuf: vk::CommandBuffer) {
+    pub fn draw_scene(&mut self, cbuf: vk::CommandBuffer, view_matrix: Mat4) {
         if let Some(per_second) = self.fps.next() {
             tracing::info!("average FPS={per_second:.1}");
         }
@@ -333,6 +334,12 @@ impl Graphics {
             &[self.descriptor_set.set],
             &[],
         );
+
+        let projection_view =
+            Mat4::perspective_lh(90.0f32.to_radians(), 9.0 / 16.0, 0.0, 100.0)
+                * view_matrix;
+        self.pipeline
+            .write_push_constant(&self.device, cbuf, &projection_view);
 
         self.pipeline.dispatch(
             &self.device,
@@ -444,6 +451,11 @@ impl Graphics {
         gpu: vk::PhysicalDevice,
         queue_families: &QueueFamilies,
     ) -> Result<Device> {
+        let mut features_as =
+            vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default()
+                .acceleration_structure(true)
+                .acceleration_structure_capture_replay(true);
+
         let mut features13 = vk::PhysicalDeviceVulkan13Features::default()
             .synchronization2(true)
             .dynamic_rendering(true);
@@ -455,9 +467,10 @@ impl Graphics {
             .uniform_and_storage_buffer8_bit_access(true);
 
         let create_info = vk::DeviceCreateInfo::default()
+            .push_next(&mut features_as)
             .push_next(&mut features13)
             .push_next(&mut features12)
-            .enabled_extension_names(&gpu::REQUIRED_EXTS_PTRPTR)
+            .enabled_extension_names(gpu::REQUIRED_EXTS_PTRPTR)
             .queue_create_infos(&queue_families.families);
 
         let device =

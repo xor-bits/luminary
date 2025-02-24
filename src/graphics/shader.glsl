@@ -14,11 +14,21 @@ layout(std430, set = 0, binding = 1) readonly buffer VoxelStorage {
     Voxel voxels[];
 } voxel_storage;
 
+layout(push_constant) uniform PushConstant {
+    mat4x4 projection_view;
+} push;
+
 void main() {
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size = imageSize(image);
 
     if (coord.x < size.x && coord.y < size.y) {
+        vec4 ray_target = push.projection_view * vec4(vec2(coord) / vec2(size), 0.0, 1.0);
+        vec4 ray_origin = push.projection_view * vec4(vec2(coord) / vec2(size), 1.0, 1.0);
+
+        imageStore(image, coord, ray_target);
+        return;
+        
         uvec2 grid_coord = gl_GlobalInvocationID.xy / 32;
         
         if (grid_coord.x >= 32 || grid_coord.y >= 32) {

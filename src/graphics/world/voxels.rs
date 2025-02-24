@@ -1,6 +1,6 @@
 use std::{mem, slice};
 
-use ash::{Device, vk};
+use ash::{Device, Instance, vk};
 use bytemuck::{Pod, Zeroable};
 use eyre::Result;
 use gpu_allocator::{MemoryLocation, vulkan::Allocator};
@@ -17,11 +17,13 @@ pub struct VoxelStructure {
 
 impl VoxelStructure {
     pub fn new(
+        instance: &Instance,
         device: &Device,
         imm: &Immediate,
         allocator: &mut Allocator,
         delete_queue: &mut DeleteQueue,
     ) -> Result<Self> {
+        let mut solids = 0usize;
         let mut basic_grid: Vec<Voxel> = Vec::with_capacity(32 * 32 * 32);
         for i in 0..basic_grid.capacity() {
             let x = i & 31;
@@ -43,10 +45,11 @@ impl VoxelStructure {
             basic_grid.push(Voxel {
                 col: is_solid as u8,
             });
+            solids += is_solid as usize;
 
-            if is_solid {
-                tracing::info!("i={i:05} x={x:02} y={y:02} z={z:02}");
-            }
+            // if is_solid {
+            //     tracing::info!("i={i:05} x={x:02} y={y:02} z={z:02}");
+            // }
         }
 
         let voxel_buffer = Buffer::builder()
@@ -91,6 +94,77 @@ impl VoxelStructure {
         })?;
 
         tmp_delete_queue.flush(device, allocator);
+
+        // TODO: make one AABB per voxel octree,
+        // then use the intersection shader to run DDA algorithm
+        // to raycast the voxels (hardware raytracing is shit for
+        // voxel data, because the octree voxel data is already in
+        // an optimal format for traversal)
+        //
+        // hardware ray tracing acceleration could later be used
+        // for having other ray traced objects in the scene, like
+        // the player, particles, vehicles, ..
+
+        /* let aabb_buffer = Buffer::builder()
+            .capacity(solids * 24)
+            .usage(
+                vk::BufferUsageFlags::STORAGE_BUFFER
+                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            )
+            .build(device, allocator, delete_queue)?;
+
+        let info =
+            vk::BufferDeviceAddressInfo::default().buffer(aabb_buffer.buffer);
+        let device_address = unsafe { device.get_buffer_device_address(&info) };
+
+        let aabbs = vk::AccelerationStructureGeometryAabbsDataKHR::default()
+            .data(vk::DeviceOrHostAddressConstKHR { device_address })
+            .stride(24);
+
+        let as_geom = vk::AccelerationStructureGeometryKHR::default()
+            .geometry_type(vk::GeometryTypeKHR::AABBS)
+            .flags(vk::GeometryFlagsKHR::OPAQUE)
+            .geometry(vk::AccelerationStructureGeometryDataKHR { aabbs });
+
+        let geom_info =
+            vk::AccelerationStructureBuildGeometryInfoKHR::default()
+                .geometries(slice::from_ref(&as_geom))
+                .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
+                .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+                .flags(
+                    vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
+                );
+
+        let primitive_counts = solids as u32;
+        // let primitive_counts = 0;
+
+        let as_loader =
+            ash::khr::acceleration_structure::Device::new(instance, device);
+
+        let mut size_info =
+            vk::AccelerationStructureBuildSizesInfoKHR::default();
+
+        unsafe {
+            as_loader.get_acceleration_structure_build_sizes(
+                vk::AccelerationStructureBuildTypeKHR::DEVICE,
+                &geom_info,
+                slice::from_ref(&primitive_counts),
+                &mut size_info,
+            );
+        }
+
+        tracing::info!("solid count = {solids}");
+        tracing::info!("voxel size = {}", voxel_buffer.size);
+        tracing::info!("aabb size = {}", aabb_buffer.size);
+        tracing::info!("{size_info:?}"); */
+
+        // as_loader.cmd_build_acceleration_structures(
+        //     command_buffer,
+        //     infos,
+        //     indirect_device_addresses,
+        //     indirect_strides,
+        //     max_primitive_counts,
+        // );
 
         Ok(Self {
             buffer: voxel_buffer,
