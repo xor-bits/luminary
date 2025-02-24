@@ -39,9 +39,13 @@ impl VoxelStructure {
                 + z.abs_diff(16).pow(2))
                 <= 120;
 
-            let is_solid = is_corner || is_ball;
+            let is_cross = (x.abs_diff(16) <= 1 && y.abs_diff(16) <= 1)
+                || (x.abs_diff(16) <= 1 && z.abs_diff(16) <= 1)
+                || (y.abs_diff(16) <= 1 && z.abs_diff(16) <= 1);
 
-            let col = 1 + (i as u8 % 3);
+            let is_solid = (is_corner || is_ball) && !is_cross;
+
+            let col = 1 + (i % 3) as u8;
 
             assert_eq!(basic_grid.len(), i);
             basic_grid.push(Voxel {

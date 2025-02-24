@@ -118,6 +118,7 @@ vec4 palette[] = {
 };
 
 void main() {
+    vec3 sun_dir = normalize(vec3(0.5, 1.0, 0.75));
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size = imageSize(image);
 
@@ -137,15 +138,15 @@ void main() {
     ray_cast(ray_origin.xyz, ray_dir, false, hit_data);
 
     if (!hit_data.hit) {
-        imageStore(image, coord, vec4(0.0, 0.0, 0.0, 1.0));
+        float sky = smoothstep(0.998, 1.0, dot(sun_dir, ray_dir));
+        imageStore(image, coord, vec4(vec3(sky), 1.0));
         return;
     }
 
     // shadow cast
-    vec3 sun_dir = vec3(0.5, 1.0, 0.75);
     HitData light_hit_data;
-    ray_cast(hit_data.position + hit_data.normal * 0.001, sun_dir, true, light_hit_data);
-    float brightness = float(light_hit_data.hit) * 0.1 + float(!light_hit_data.hit) * dot(sun_dir, hit_data.normal);
+    ray_cast(hit_data.position + hit_data.normal * 0.005, sun_dir, true, light_hit_data);
+    float brightness = float(light_hit_data.hit) * 0.05 + float(!light_hit_data.hit) * dot(sun_dir, hit_data.normal);
 
     uint voxel_col = get_voxel(hit_data.voxel);
     vec4 col = palette[voxel_col];
