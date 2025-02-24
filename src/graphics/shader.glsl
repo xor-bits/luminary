@@ -67,6 +67,7 @@ void ray_cast(vec3 ray_origin, vec3 ray_dir, bool skip_first, out HitData hit_da
     if (!ray_aabb(ray_origin, ray_dir, vec3(0.0), vec3(32.0), t_close_f, t_far_f)) {
         hit_data.position = ray_origin;
         hit_data.hit = false;
+        hit_data.steps = 0;
         return;
     }
 
@@ -101,6 +102,10 @@ void ray_cast(vec3 ray_origin, vec3 ray_dir, bool skip_first, out HitData hit_da
         mask = lessThanEqual(next_dist.xyz, min(next_dist.yzx, next_dist.zxy));
         next_dist += vec3(mask) * ray_dist;
         world_pos += ivec3(vec3(mask) * ray_sign);
+
+        if (!(all(lessThanEqual(ivec3(0), world_pos)) && all(lessThanEqual(world_pos, ivec3(32))))) {
+            break;
+        }
     }
 
     hit_data.voxel = world_pos;
@@ -137,6 +142,11 @@ void main() {
     HitData hit_data;
     ray_cast(ray_origin.xyz, ray_dir, false, hit_data);
 
+    if ((push.mode_flags & 8) != 0) {
+        imageStore(image, coord, vec4(vec3(float(hit_data.steps) / 50), 1.0));
+        return;
+    }
+
     if (!hit_data.hit) {
         float sky = smoothstep(0.998, 1.0, dot(sun_dir, ray_dir));
         imageStore(image, coord, vec4(vec3(sky), 1.0));
@@ -158,7 +168,7 @@ void main() {
         col = vec4(vec3(hit_data.distance / 100.0), 1.0);
     } else if ((push.mode_flags & 4) != 0) {
         col = vec4(vec3(hit_data.normal), 1.0);
-    }
+    }  
     
     imageStore(image, coord, col);
 }

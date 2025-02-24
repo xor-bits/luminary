@@ -109,22 +109,27 @@ impl AppInner {
 
         if self.just_pressed.contains(&KeyCode::F1) {
             // normal vision
-            self.mode_flags &= !7;
+            self.mode_flags &= !15;
         }
         if self.just_pressed.contains(&KeyCode::F2) {
             // brightness vision
-            self.mode_flags &= !7;
+            self.mode_flags &= !15;
             self.mode_flags |= 1;
         }
         if self.just_pressed.contains(&KeyCode::F3) {
             // depth vision
-            self.mode_flags &= !7;
+            self.mode_flags &= !15;
             self.mode_flags |= 2;
         }
         if self.just_pressed.contains(&KeyCode::F4) {
             // normals vision
-            self.mode_flags &= !7;
+            self.mode_flags &= !15;
             self.mode_flags |= 4;
+        }
+        if self.just_pressed.contains(&KeyCode::F5) {
+            // step counter vision
+            self.mode_flags &= !15;
+            self.mode_flags |= 8;
         }
 
         self.just_pressed.clear();
