@@ -58,6 +58,7 @@ void main() {
     vec3 ray_dist = abs(ray_dir_inv);
     vec3 next_dist = (ray_sign * (ray_origin_grid - ray_origin.xyz) + (ray_sign * 0.5) + 0.5) * ray_dist;
 
+    bvec3 mask = bvec3(false);
     uint hit_depth = 0;
     for (; hit_depth < 100; hit_depth ++) {
         uint voxel_col = get_voxel(world_pos);
@@ -65,10 +66,21 @@ void main() {
             break;
         }
 
-        bvec3 mask = lessThanEqual(next_dist.xyz, min(next_dist.yzx, next_dist.zxy));
+        mask = lessThanEqual(next_dist.xyz, min(next_dist.yzx, next_dist.zxy));
         next_dist += vec3(mask) * ray_dist;
         world_pos += ivec3(vec3(mask) * ray_sign);
     }
 
-    imageStore(image, coord, vec4(vec3(hit_depth) / vec3(100.0), 1.0));
+    // vec3 col = vec3(hit_depth) / vec3(100.0);
+    vec3 col = vec3(0.0);
+    if (mask.x)
+        col = vec3(1.0);
+    if (mask.y)
+        col = vec3(0.5);
+    if (mask.z)
+        col = vec3(0.75);
+    if (hit_depth == 100)
+        col = vec3(0.0);
+
+    imageStore(image, coord, vec4(col, 1.0));
 }
