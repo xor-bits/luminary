@@ -16,7 +16,10 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
-    event::{DeviceEvent, DeviceId, ElementState, KeyEvent, WindowEvent},
+    event::{
+        DeviceEvent, DeviceId, ElementState, KeyEvent, MouseScrollDelta,
+        WindowEvent,
+    },
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
     window::{CursorGrabMode, Window, WindowId},
@@ -43,6 +46,7 @@ struct AppInner {
     graphics: Graphics,
     eye: flycam::Flycam,
     dt: Instant,
+    speed: f32,
 
     cursor_visible: bool,
 
@@ -86,7 +90,7 @@ impl AppInner {
         if self.pressed.contains(&KeyCode::ControlLeft) {
             delta *= 0.2;
         }
-        self.eye.movement(delta * delta_seconds * 10.0);
+        self.eye.movement(delta * delta_seconds * 10.0 * self.speed);
 
         self.just_pressed.clear();
         self.just_released.clear();
@@ -143,6 +147,7 @@ impl ApplicationHandler for App {
                 graphics,
                 eye,
                 dt: Instant::now(),
+                speed: 1.0,
 
                 cursor_visible: true,
 
@@ -164,6 +169,8 @@ impl ApplicationHandler for App {
         };
 
         inner.ev(&event);
+
+        // tracing::debug!("event: {event:?}");
 
         match event {
             WindowEvent::KeyboardInput {
@@ -192,6 +199,13 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 inner.render();
+            }
+            WindowEvent::MouseWheel {
+                delta: MouseScrollDelta::LineDelta(x, y),
+                ..
+            } => {
+                inner.speed = 2.0f32.powf(inner.speed.log2() + y * 0.25);
+                // tracing::info!("speed={} delta={y}", inner.speed);
             }
             WindowEvent::Resized(size) => {
                 inner.graphics.resize().expect("failed to resize");
