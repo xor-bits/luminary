@@ -41,9 +41,11 @@ impl VoxelStructure {
 
             let is_solid = is_corner || is_ball;
 
+            let col = 1 + (i as u8 % 3);
+
             assert_eq!(basic_grid.len(), i);
             basic_grid.push(Voxel {
-                col: is_solid as u8,
+                col: col * is_solid as u8,
             });
             solids += is_solid as usize;
 

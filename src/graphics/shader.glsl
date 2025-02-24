@@ -80,6 +80,13 @@ void ray_cast(vec3 ray_origin, vec3 ray_dir, bool skip_first, out HitData hit_da
     hit_data.position = ray_origin + ray_dir * hit_data.distance;
 }
 
+vec4 palette[] = {
+    vec4(0.000, 0.000, 0.000, 0.0),
+    vec4(0.000, 0.453, 0.668, 1.0),
+    vec4(0.000, 0.316, 0.469, 1.0),
+    vec4(0.746, 0.914, 1.000, 1.0),
+};
+
 void main() {
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size = imageSize(image);
@@ -111,12 +118,11 @@ void main() {
     vec3 sun_dir = vec3(0.5, 1.0, 0.75);
     HitData light_hit_data;
     ray_cast(hit_data.position + hit_data.normal * 0.001, sun_dir, true, light_hit_data);
+    float brightness = float(light_hit_data.hit) * 0.1 + float(!light_hit_data.hit) * dot(sun_dir, hit_data.normal);
 
-    if (!light_hit_data.hit) {
-        imageStore(image, coord, vec4(vec3(dot(sun_dir, hit_data.normal)), 1.0));
-        return;
-    }
-
-    imageStore(image, coord, vec4(0.1, 0.1, 0.1, 1.0));
-    return;
+    uint voxel_col = get_voxel(hit_data.voxel);
+    vec4 col = palette[voxel_col];
+    col.xyz *= brightness;
+    
+    imageStore(image, coord, col);
 }
