@@ -59,7 +59,7 @@ void main() {
     vec3 next_dist = (ray_sign * (ray_origin_grid - ray_origin.xyz) + (ray_sign * 0.5) + 0.5) * ray_dist;
 
     uint hit_depth = 0;
-    for (; hit_depth < 1024; hit_depth ++) {
+    for (; hit_depth < 100; hit_depth ++) {
         uint voxel_col = get_voxel(world_pos);
         if (voxel_col != 0) {
             break;
@@ -70,5 +70,5 @@ void main() {
         world_pos += ivec3(vec3(mask) * ray_sign);
     }
 
-    imageStore(image, coord, vec4(vec3(hit_depth) / vec3(1024.0), 1.0));
+    imageStore(image, coord, vec4(vec3(hit_depth) / vec3(100.0), 1.0));
 }
