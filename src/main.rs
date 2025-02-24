@@ -11,14 +11,14 @@
 use std::sync::Arc;
 
 use eyre::Result;
-use glam::Vec2;
+use glam::{Vec2, Vec3};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
     event::{DeviceEvent, DeviceId, ElementState, KeyEvent, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
-    window::{Window, WindowId},
+    window::{CursorGrabMode, Window, WindowId},
 };
 
 use self::graphics::Graphics;
@@ -57,6 +57,8 @@ impl ApplicationHandler for App {
                 .unwrap()
                 .into();
 
+            window.set_cursor_grab(CursorGrabMode::Confined).unwrap();
+
             let graphics = Graphics::new(window.clone())
                 .expect("failed to initialize graphics");
 
@@ -94,6 +96,94 @@ impl ApplicationHandler for App {
                 println!("closing");
                 el.exit();
             }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(KeyCode::KeyA),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                inner.eye.movement(Vec3::new(-1.0, 0.0, 0.0));
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(KeyCode::KeyD),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                inner.eye.movement(Vec3::new(1.0, 0.0, 0.0));
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(KeyCode::KeyW),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                inner.eye.movement(Vec3::new(0.0, 0.0, 1.0));
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(KeyCode::KeyS),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                inner.eye.movement(Vec3::new(0.0, 0.0, -1.0));
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(KeyCode::ArrowLeft),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                inner.eye.mouse_delta(Vec2::new(-20.0, 0.0));
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(KeyCode::ArrowRight),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                inner.eye.mouse_delta(Vec2::new(20.0, 0.0));
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(KeyCode::ArrowUp),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                inner.eye.mouse_delta(Vec2::new(0.0, 20.0));
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(KeyCode::ArrowDown),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                inner.eye.mouse_delta(Vec2::new(0.0, -20.0));
+            }
             WindowEvent::RedrawRequested => {
                 inner
                     .graphics
@@ -119,7 +209,9 @@ impl ApplicationHandler for App {
         };
 
         if let DeviceEvent::MouseMotion { delta } = event {
-            inner.eye.mouse_delta(Vec2::new(delta.0 as _, delta.1 as _));
+            inner
+                .eye
+                .mouse_delta(Vec2::new(-delta.0 as _, -delta.1 as _));
         }
     }
 

@@ -22,43 +22,37 @@ void main() {
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size = imageSize(image);
 
-    if (coord.x < size.x && coord.y < size.y) {
-        vec4 ray_target = push.projection_view * vec4(vec2(coord) / vec2(size), 0.0, 1.0);
-        vec4 ray_origin = push.projection_view * vec4(vec2(coord) / vec2(size), 1.0, 1.0);
-
-        imageStore(image, coord, ray_target);
+    if (coord.x >= size.x || coord.y >= size.y) {
         return;
-        
-        uvec2 grid_coord = gl_GlobalInvocationID.xy / 32;
-        
-        if (grid_coord.x >= 32 || grid_coord.y >= 32) {
-            imageStore(image, coord, vec4(1.0, 0.0, 0.5, 1.0));
-            return;
-        }
+    }
 
-        uint hit_depth = 0;
-        for (; hit_depth < 32; hit_depth++) {
-            uint index = (grid_coord.x) | (grid_coord.y << 5) | (hit_depth << 10);
+    vec2 plane_pos = vec2(coord.xy) / vec2(size.xy) * 2.0 - 1.0;
+    vec4 ray_origin = push.projection_view * vec4(plane_pos, 0.0, 1.0);
+    vec4 ray_target = push.projection_view * vec4(plane_pos, 1.0, 1.0);
+
+    ray_origin.xyz /= ray_origin.w;
+    ray_target.xyz /= ray_target.w;
+
+    vec3 ray_dir = normalize(ray_target.xyz - ray_origin.xyz);
+
+    ivec3 ray_step = ivec3(sign(ray_dir));
+
+    uint hit_depth = 0;
+    for (; hit_depth < 1024; hit_depth ++) {
+        ivec3 world_pos = ivec3(ray_origin.xyz);
+        if (0 <= world_pos.x && world_pos.x < 32 &&
+            0 <= world_pos.y && world_pos.y < 32 &&
+            0 <= world_pos.z && world_pos.z < 32) {
+            uint index = (world_pos.x) | (world_pos.y << 5) | (world_pos.z << 10);
             uint voxel_col = uint(voxel_storage.voxels[index].col);
-            
+
             if (voxel_col != 0) {
                 break;
             }
         }
-        
-        
-        vec4 col = vec4(
-            float(32 - hit_depth) / 32,
-            float(32 - hit_depth) / 32,
-            float(32 - hit_depth) / 32,
-            1.0
-        );
-        // vec4 col = vec4(
-        //     float(index) / 1024,
-        //     float(index) / 1024,
-        //     float(index) / 1024,
-        //     1.0
-        // );
-        imageStore(image, coord, col);
+   
+        ray_origin.xyz += ray_dir * 0.1;
     }
+
+    imageStore(image, coord, vec4(vec3(hit_depth) / vec3(1024.0), 1.0));
 }

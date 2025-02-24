@@ -1,13 +1,13 @@
 use core::slice;
 use std::{
     mem::ManuallyDrop,
-    sync::{Arc, LazyLock},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use ash::{Device, Entry, Instance, ext, vk};
 use eyre::Result;
-use glam::{Mat4, UVec3, Vec3};
+use glam::{Mat4, UVec3, Vec4};
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use winit::{raw_window_handle::HasDisplayHandle, window::Window};
 
@@ -335,9 +335,15 @@ impl Graphics {
             &[],
         );
 
-        let projection_view =
-            Mat4::perspective_lh(90.0f32.to_radians(), 9.0 / 16.0, 0.0, 100.0)
-                * view_matrix;
+        let projection_view = Mat4::perspective_lh(
+            90.0f32.to_radians(),
+            self.swapchain.extent.width as f32
+                / self.swapchain.extent.height as f32,
+            0.01,
+            10.0,
+        ) * view_matrix;
+        let projection_view = projection_view.inverse();
+
         self.pipeline
             .write_push_constant(&self.device, cbuf, &projection_view);
 
