@@ -424,9 +424,12 @@ impl Graphics {
             }
         }
         let validation_layer = c"VK_LAYER_KHRONOS_validation";
+        #[cfg(debug_assertions)]
         let validation_layer_found = layers
             .iter()
             .any(|layer| layer.layer_name_as_c_str() == Ok(validation_layer));
+        #[cfg(not(debug_assertions))]
+        let validation_layer_found = false;
         let layers = if validation_layer_found {
             &[validation_layer.as_ptr()][..]
         } else {
@@ -476,10 +479,15 @@ impl Graphics {
             .descriptor_indexing(true)
             .uniform_and_storage_buffer8_bit_access(true);
 
+        let mut features11 = vk::PhysicalDeviceVulkan11Features::default()
+            .uniform_and_storage_buffer16_bit_access(true)
+            .storage_buffer16_bit_access(true);
+
         let create_info = vk::DeviceCreateInfo::default()
             .push_next(&mut features_as)
             .push_next(&mut features13)
             .push_next(&mut features12)
+            .push_next(&mut features11)
             .enabled_extension_names(gpu::REQUIRED_EXTS_PTRPTR)
             .queue_create_infos(&queue_families.families);
 

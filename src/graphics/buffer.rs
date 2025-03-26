@@ -89,7 +89,7 @@ impl BufferBuilder {
         };
 
         let allocation = allocator.allocate(&alloc_desc)?;
-        let size = allocation.size();
+        let size = self.capacity as u64;
         let offset = allocation.offset();
         let ptr = allocation.mapped_ptr().map(SyncPtr);
         let memory = unsafe { allocation.memory() };

@@ -3,6 +3,7 @@ use std::{mem, slice};
 use ash::{Device, Instance, vk};
 use bytemuck::{Pod, Zeroable};
 use eyre::Result;
+use glam::{U64Vec3, UVec3};
 use gpu_allocator::{MemoryLocation, vulkan::Allocator};
 
 use crate::graphics::{
@@ -23,9 +24,14 @@ impl VoxelStructure {
         allocator: &mut Allocator,
         delete_queue: &mut DeleteQueue,
     ) -> Result<Self> {
-        let mut solids = 0usize;
-        let mut basic_grid: Vec<Voxel> = Vec::with_capacity(32 * 32 * 32);
-        for i in 0..basic_grid.capacity() {
+        let mut octree_data: Vec<Voxel> = vec![Voxel {
+            col: 0,
+            child_pointer: 0,
+            valid_mask: 0,
+            leaf_mask: 0,
+        }];
+
+        for i in 0..(32 * 32 * 32) as usize {
             let x = i & 31;
             let y = (i >> 5) & 31;
             let z = (i >> 10) & 31;
@@ -44,22 +50,34 @@ impl VoxelStructure {
                 || (y.abs_diff(16) <= 1 && z.abs_diff(16) <= 1);
 
             let is_solid = (is_corner || is_ball) && !is_cross;
+            // let is_solid = is_corner;
+
+            if !is_solid {
+                continue;
+            }
 
             let col = 1 + (i % 3) as u8;
 
-            assert_eq!(basic_grid.len(), i);
-            basic_grid.push(Voxel {
-                col: col * is_solid as u8,
-            });
-            solids += is_solid as usize;
+            Self::insert_voxel(
+                &mut octree_data,
+                U64Vec3::new(x as _, y as _, z as _),
+                col as u32,
+            );
 
             // if is_solid {
             //     tracing::info!("i={i:05} x={x:02} y={y:02} z={z:02}");
             // }
         }
 
+        // tracing::info!("octree: {octree_data:#?}");
+
+        tracing::info!(
+            "voxel data = {}B",
+            octree_data.len() * mem::size_of::<Voxel>()
+        );
+
         let voxel_buffer = Buffer::builder()
-            .capacity(basic_grid.len() * mem::size_of::<Voxel>())
+            .capacity(octree_data.len() * mem::size_of::<Voxel>())
             .usage(
                 vk::BufferUsageFlags::STORAGE_BUFFER
                     | vk::BufferUsageFlags::TRANSFER_DST,
@@ -70,7 +88,7 @@ impl VoxelStructure {
         let mut tmp_delete_queue = DeleteQueue::new();
 
         let mut stage_buffer = Buffer::builder()
-            .capacity(basic_grid.len() * mem::size_of::<Voxel>())
+            .capacity(octree_data.len() * mem::size_of::<Voxel>())
             .usage(vk::BufferUsageFlags::TRANSFER_SRC)
             .location(MemoryLocation::CpuToGpu)
             .build(device, allocator, &mut tmp_delete_queue)?;
@@ -79,7 +97,8 @@ impl VoxelStructure {
             .as_slice_mut()
             .expect("stage buffer should be CPU mappable");
 
-        stage_buffer_memory.copy_from_slice(bytemuck::cast_slice(&basic_grid));
+        stage_buffer_memory[..octree_data.len() * mem::size_of::<Voxel>()]
+            .copy_from_slice(bytemuck::cast_slice(&octree_data));
 
         imm.submit(device, |cbuf| {
             let copy = vk::BufferCopy::default()
@@ -111,92 +130,62 @@ impl VoxelStructure {
         // for having other ray traced objects in the scene, like
         // the player, particles, vehicles, ..
 
-        /* let aabb_buffer = Buffer::builder()
-            .capacity(solids * 24)
-            .usage(
-                vk::BufferUsageFlags::STORAGE_BUFFER
-                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            )
-            .build(device, allocator, delete_queue)?;
-
-        let info =
-            vk::BufferDeviceAddressInfo::default().buffer(aabb_buffer.buffer);
-        let device_address = unsafe { device.get_buffer_device_address(&info) };
-
-        let aabbs = vk::AccelerationStructureGeometryAabbsDataKHR::default()
-            .data(vk::DeviceOrHostAddressConstKHR { device_address })
-            .stride(24);
-
-        let as_geom = vk::AccelerationStructureGeometryKHR::default()
-            .geometry_type(vk::GeometryTypeKHR::AABBS)
-            .flags(vk::GeometryFlagsKHR::OPAQUE)
-            .geometry(vk::AccelerationStructureGeometryDataKHR { aabbs });
-
-        let geom_info =
-            vk::AccelerationStructureBuildGeometryInfoKHR::default()
-                .geometries(slice::from_ref(&as_geom))
-                .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-                .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
-                .flags(
-                    vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
-                );
-
-        let primitive_counts = solids as u32;
-        // let primitive_counts = 0;
-
-        let as_loader =
-            ash::khr::acceleration_structure::Device::new(instance, device);
-
-        let mut size_info =
-            vk::AccelerationStructureBuildSizesInfoKHR::default();
-
-        unsafe {
-            as_loader.get_acceleration_structure_build_sizes(
-                vk::AccelerationStructureBuildTypeKHR::DEVICE,
-                &geom_info,
-                slice::from_ref(&primitive_counts),
-                &mut size_info,
-            );
-        }
-
-        tracing::info!("solid count = {solids}");
-        tracing::info!("voxel size = {}", voxel_buffer.size);
-        tracing::info!("aabb size = {}", aabb_buffer.size);
-        tracing::info!("{size_info:?}"); */
-
-        // as_loader.cmd_build_acceleration_structures(
-        //     command_buffer,
-        //     infos,
-        //     indirect_device_addresses,
-        //     indirect_strides,
-        //     max_primitive_counts,
-        // );
-
         Ok(Self {
             buffer: voxel_buffer,
         })
+    }
 
-        // device.map_memory(memory, offset, size, flags)
+    fn insert_voxel(octree: &mut Vec<Voxel>, at: U64Vec3, col: u32) {
+        let mut current = 0usize;
+        let mut center = U64Vec3::splat(16);
+        let mut span = 16usize;
 
-        // allocator.allocate(desc)
+        for i in 0..5 {
+            if octree[current].valid_mask == 0 {
+                octree[current].child_pointer = octree
+                    .len()
+                    .try_into()
+                    .expect("todo: blocks & far pointers");
+                octree.extend(
+                    [Voxel {
+                        col: 0,
+                        child_pointer: 0,
+                        valid_mask: 0,
+                        leaf_mask: 0,
+                    }]
+                    .iter()
+                    .cycle()
+                    .take(8),
+                );
+            }
 
-        // Ok(Self {})
+            tracing::info!("center = {center} point = {at}");
+            let cmpge = at.cmpge(center);
+            let child_idx = cmpge.bitmask();
+            tracing::info!("child_idx = {child_idx}");
+            span /= 2;
+            center -= U64Vec3::splat(span as _);
+            center += U64Vec3::splat(span as u64 * 2)
+                * U64Vec3::new(cmpge.x as _, cmpge.y as _, cmpge.z as _);
+
+            octree[current].valid_mask |= 1 << child_idx;
+            current =
+                octree[current].child_pointer as usize + child_idx as usize;
+        }
+
+        octree[current].col = col;
     }
 }
 
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
-pub struct Node {
-    /// relative offset in the buffer to the next 8 nodes or voxels
-    children: i16,
-    /// which next children are final voxels and which are nodes
-    child_mask: u8,
-    /// average of the next levels, lower LOD
-    average: u8,
-}
-
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-#[repr(C)]
 pub struct Voxel {
-    col: u8,
+    col: u32,
+    /// 15 bit pointer (relative to this block) to 8 children within the current block,
+    /// the last 1 bit tells if it is actually a pointer to a far pointer
+    child_pointer: u16,
+    /// which children are non-leaf voxels
+    valid_mask: u8,
+    /// which children are leaf voxels
+    leaf_mask: u8,
 }

@@ -1,13 +1,22 @@
 #version 460
-#extension GL_EXT_shader_8bit_storage : enable
-// #extension GL_EXT_shader_explicit_arithmetic_types : enable
+// #extension GL_EXT_shader_8bit_storage : enable
+// #extension GL_EXT_shader_16bit_storage : enable
+// #extension GL_EXT_shader_8bit_storage : enable
+#extension GL_EXT_shader_explicit_arithmetic_types : enable
 
 layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(rgba16f, set = 0, binding = 0) uniform image2D image;
 
 struct Voxel {
-    uint8_t col;
+    uint32_t col;
+    // 15 bit pointer (relative to this block) to 8 children within the current block,
+    // the last 1 bit tells if it is actually a pointer to a far pointer
+    uint16_t child_pointer;
+    // which children are non-leaf voxels
+    uint8_t valid_mask;
+    // which children are leaf voxels
+    uint8_t leaf_mask;
 };
 
 layout(std430, set = 0, binding = 1) readonly buffer VoxelStorage {
@@ -21,7 +30,7 @@ layout(push_constant) uniform PushConstant {
 
 //
 
-uint get_voxel(ivec3 world_pos) {
+uint get_voxel_linear(ivec3 world_pos) {
     if (0 <= world_pos.x && world_pos.x < 32 &&
         0 <= world_pos.y && world_pos.y < 32 &&
         0 <= world_pos.z && world_pos.z < 32) {
@@ -33,6 +42,53 @@ uint get_voxel(ivec3 world_pos) {
 
     return 0;
 }
+
+uint get_voxel(ivec3 world_pos) {
+    vec3 center = vec3(16.0);
+    float half_span = 8.0;
+
+    uint current = 0;
+
+    for (uint i = 0; i < 5; i++) {
+        bvec3 cmpge = greaterThanEqual(world_pos, center);
+        uint child_idx = uint(cmpge.x) | (uint(cmpge.y) << 1) | (uint(cmpge.z) << 2);
+        center -= vec3(half_span);
+        center += vec3(half_span * 2.0) * ivec3(cmpge);
+        half_span /= 2.0;
+
+        if ((uint(voxel_storage.voxels[current].valid_mask) & (1 << child_idx)) == 0) {
+            return 0;
+        }
+
+        current = uint(voxel_storage.voxels[current].child_pointer) + child_idx;
+    }
+
+    return voxel_storage.voxels[current].col;
+}
+
+/* {
+    world_pos = 0,0,0
+    ivec3 center = 8,8,8;
+    uint half_span = 4;
+
+    uint current = 0;
+
+    for (uint i = 1; i < 4; i++) {
+        bvec3 cmpge = greaterThanEqual(world_pos, center);
+        uint child_idx = uint(cmpge.x) | (uint(cmpge.y) << 1) | (uint(cmpge.z) << 2);
+        center -= ivec3(half_span);
+        center += ivec3(half_span * 2) * ivec3(cmpge);
+        half_span /= 2;
+
+        if ((uint(voxel_storage.voxels[current].valid_mask) & child_idx) == 0) {
+            return 0;
+        }
+
+        current = uint(voxel_storage.voxels[current].child_pointer) + child_idx;
+    }
+
+    return voxel_storage.voxels[current].col;
+} */
 
 struct HitData {
     ivec3 voxel;
@@ -62,7 +118,7 @@ bool ray_aabb(
     // return (sign(t_close_f) > 0.0 && t_close_f <= t_far_f) || (all(lessThanEqual(low, ray_origin)) && all(lessThanEqual(ray_origin, high)));
 }
 
-void ray_cast(vec3 ray_origin, vec3 ray_dir, bool skip_first, out HitData hit_data) {
+void ray_cast_linear(vec3 ray_origin, vec3 ray_dir, bool skip_first, out HitData hit_data) {
     float t_close_f, t_far_f;
     if (!ray_aabb(ray_origin, ray_dir, vec3(0.0), vec3(32.0), t_close_f, t_far_f)) {
         hit_data.position = ray_origin;
@@ -113,6 +169,43 @@ void ray_cast(vec3 ray_origin, vec3 ray_dir, bool skip_first, out HitData hit_da
     hit_data.distance = length(vec3(mask) * (next_dist - ray_dist));
     hit_data.position = ray_origin + ray_dir * hit_data.distance;
     hit_data.distance += max(t_close_f, 0.0);
+}
+
+uint select_child(vec3 t_coeff, vec3 t_bias, vec3 center, vec3 point) {
+    vec3 planes = t_coeff * center + t_bias;
+    bvec3 bitmask = greaterThanEqual(point, planes);
+    return uint(bitmask.x) | (uint(bitmask.y) << 1) | (uint(bitmask.z) << 2);
+}
+
+void ray_cast(vec3 ray_origin, vec3 ray_dir, bool skip_first, out HitData hit_data) {
+    // float t_close_f, t_far_f;
+    // if (!ray_aabb(ray_origin, ray_dir, vec3(0.0), vec3(32.0), t_close_f, t_far_f)) {
+    //     hit_data.position = ray_origin;
+    //     hit_data.hit = false;
+    //     hit_data.steps = 0;
+    //     return;
+    // }
+
+    // t(a) = (1/ray_dir)a + (-ray_origin/ray_dir)
+    //      = (a - ray_origin)/ray_dir
+    vec3 t_coeff = 1.0 / ray_dir;
+    vec3 t_bias  = - t_coeff * ray_origin;
+
+    vec3 t_low = t_bias;
+    vec3 t_high = t_coeff * 32.0 + t_bias;
+    vec3 t_close = min(t_low, t_high);
+    vec3 t_far = max(t_low, t_high);
+    float t_min = max(t_close.x, max(t_close.y, t_close.z));
+    float t_max = min(t_far.x, min(t_far.y, t_far.z));
+
+    hit_data.hit = t_min <= t_max;
+    hit_data.distance = t_min;
+
+    float stop = t_max;
+    uint parent = 0; // root node
+    uint idx = select_child(t_coeff, t_bias, vec3(16), vec3(t_min));
+
+    hit_data.distance = float(idx) * 5.0;
 }
 
 vec4 palette[] = {

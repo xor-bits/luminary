@@ -12,7 +12,7 @@ impl Flycam {
     pub const fn new() -> Self {
         Self {
             position: Vec3::splat(40.0),
-            yaw: std::f32::consts::PI, // - std::f32::consts::FRAC_PI_4,
+            yaw: std::f32::consts::PI + std::f32::consts::FRAC_PI_4,
             pitch: -std::f32::consts::FRAC_PI_4,
         }
     }
